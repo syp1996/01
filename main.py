@@ -2,7 +2,7 @@
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
 Date: 2026-01-26 08:49:23
 LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
-LastEditTime: 2026-01-27 09:58:34
+LastEditTime: 2026-01-27 10:43:39
 FilePath: /01/main.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
@@ -36,7 +36,7 @@ def merge_dict(old_dict, new_dict):
 
 # 单个任务的模型
 class Task(BaseModel):
-    task_type: Literal["ticket_agent", "complaint_agent", "general_chat"]
+    task_type: Literal["ticket_agent", "complaint_agent", "general_chat", "manager_agent", "judge_agent"]
     description: str = Field(..., description="任务的具体描述，例如：'查询西湖票价'")
     input_content: str = Field(..., description="用户关于该任务的具体输入内容。例如：'查询去萧山机场的路线'")
     status: Literal["pending", "done"] = "pending"
@@ -45,10 +45,6 @@ class Task(BaseModel):
 class PlanningResponse(BaseModel):
     tasks: List[Task] = Field(..., description="根据用户输入拆解出的任务列表")
 
-# 定义路由输出的结构
-class RouteResponse(BaseModel):
-    next_node:Literal["ticket_agent", "complaint_agent", "general_chat","FINISH"] = Field(
-        ..., description="根据用户意图选择的下一个处理节点")
 
 # 初始化模型
 llm = ChatOpenAI(
@@ -74,7 +70,9 @@ class agentState(TypedDict):
 WORKERS_INFO = {
     "ticket_agent": "处理票务查询、票价计算、线路查询、首末班车时间。",
     "complaint_agent": "处理用户投诉、服务建议、设施故障反馈、失物招领。",
-    "general_chat": "处理打招呼、问候、闲聊或无法归类的通用问题。"
+    "general_chat": "处理打招呼、问候、闲聊或无法归类的通用问题。",
+    "manager_agent":"处理质检、排班、监控培训相关工作",
+    "judge_agent":"负责热点分析,苗头事件,时序预测,线索筛查相关工作",
 }
 
 async def supervisor_node(state: agentState):
@@ -168,7 +166,28 @@ def complete_current_task(state: agentState, agent_name: str):
         
     return new_board
 
-async def ticket_node(state: agentState):
+async def judge_agent(state: agentState):
+    # 1. 从看板获取【纯净输入】
+    board = state.get("task_board", [])
+    isolated_input = ""
+    for task in board:
+        if task['task_type'] == "judge_agent" and task['status'] == 'pending':
+            isolated_input = task['input_content']
+            break
+    sys_msg = SystemMessage(content="你是社情分析判断专家。只回和处理社情分析相关的问题，不要管其他问题。")
+    human_msg = HumanMessage(content=isolated_input)
+    response = await llm.ainvoke([sys_msg, human_msg])
+    # 销账
+    updated_board = complete_current_task(state, "judge_agent")
+    return {
+        "messages": [AIMessage(content=response.content, name="judge_agent")],
+        "task_board": updated_board,# 返回更新后的看板
+        # 3. 【新增】将结果写入暂存区
+        "task_results": {"judge_agent": response.content}
+    }
+
+
+async def ticket_agent(state: agentState):
     # 1. 从看板获取【纯净输入】
     board = state.get("task_board", [])
     isolated_input = ""
@@ -190,7 +209,7 @@ async def ticket_node(state: agentState):
         "task_results": {"ticket_agent": response.content}
     }
 
-async def complaint_node(state: agentState):
+async def complaint_agent(state: agentState):
     sys_msg = SystemMessage(content="你是投诉专员。只回答投诉问题，不要管票务。")
     board = state.get("task_board", [])
     isolated_input = ""
@@ -200,15 +219,30 @@ async def complaint_node(state: agentState):
             break
 
     human_msg = HumanMessage(content=isolated_input)
-    
     response = await llm.ainvoke([sys_msg, human_msg])
-    
     updated_board = complete_current_task(state, "complaint_agent")
     
     return {
         "messages": [AIMessage(content=response.content, name="complaint_agent")],
         "task_board": updated_board,
-        "task_results": {"ticket_agent": response.content}
+        "task_results": {"complaint_agent": response.content}
+    }
+
+async def manager_agent(state: agentState):
+    board = state.get("task_board", [])
+    isolated_input = ""
+    for task in board:
+        if task['task_type'] == "manager_agent" and task['status'] == 'pending':
+            isolated_input = task['input_content']
+            break
+    sys_msg = SystemMessage(content="你是管理助手，你的职责是协助完成质检、排班、监控培训相关工作。")
+    human_msg = HumanMessage(content=isolated_input)
+    response = await llm.ainvoke([sys_msg, human_msg])
+    updated_board = complete_current_task(state, "manager_agent")
+    return {
+        "messages": [AIMessage(content=response.content, name="manager_agent")],
+        "task_board": updated_board,
+        "task_results": {"manager_agent": response.content}
     }
 
 async def chat_node(state: agentState):
@@ -227,7 +261,7 @@ async def chat_node(state: agentState):
     return {
         "messages": [AIMessage(content=response.content, name="general_chat")],
         "task_board": updated_board,
-        "task_results": {"ticket_agent": response.content}
+        "task_results": {"general_chat": response.content}
     }
 
 async def responder_node(state: agentState):
@@ -279,9 +313,11 @@ workflow = StateGraph(agentState)
 
 #添加节点
 workflow.add_node("supervisor_node", supervisor_node)
-workflow.add_node("ticket_agent", ticket_node)
-workflow.add_node("complaint_agent", complaint_node)
+workflow.add_node("ticket_agent", ticket_agent)
+workflow.add_node("complaint_agent", complaint_agent)
 workflow.add_node("general_chat", chat_node)
+workflow.add_node("manager_agent", manager_agent)
+workflow.add_node("judge_agent", judge_agent)
 workflow.add_node("responder_node", responder_node)
 
 # 所有请求先进 supervisor
@@ -294,6 +330,8 @@ workflow.add_conditional_edges(
         "ticket_agent": "ticket_agent",
         "complaint_agent": "complaint_agent",
         "general_chat": "general_chat",
+        "manager_agent": "manager_agent",
+        "judge_agent": "judge_agent",
         "FINISH": "responder_node",  # 只有这里可以走向结束
     }
 )
@@ -302,6 +340,8 @@ workflow.add_conditional_edges(
 workflow.add_edge("ticket_agent", 'supervisor_node')
 workflow.add_edge("complaint_agent", 'supervisor_node')
 workflow.add_edge("general_chat", 'supervisor_node')
+workflow.add_edge("manager_agent", 'supervisor_node')
+workflow.add_edge("judge_agent", 'supervisor_node')
 workflow.add_edge("responder_node", END)
 # ---  初始化内存 ---
 memory = MemorySaver()
