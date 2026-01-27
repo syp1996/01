@@ -2,7 +2,7 @@
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
 Date: 2026-01-26 08:49:23
 LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
-LastEditTime: 2026-01-26 15:08:47
+LastEditTime: 2026-01-27 08:23:56
 FilePath: /01/main.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
@@ -31,6 +31,7 @@ load_dotenv()
 class Task(BaseModel):
     task_type: Literal["ticket_agent", "complaint_agent", "general_chat"]
     description: str = Field(..., description="任务的具体描述，例如：'查询西湖票价'")
+    input_content: str = Field(..., description="用户关于该任务的具体输入内容。例如：'查询去萧山机场的路线'")
     status: Literal["pending", "done"] = "pending"
 
 # 规划结果（监督者生成这个）
@@ -89,6 +90,8 @@ async def supervisor_node(state: agentState):
         要求：
         1. 如果用户有多个意图，请拆分成多个任务。
         2. 必须输出 JSON 格式的任务列表。
+        3. 对于每个子任务，你必须将用户原话中**属于该任务的部分**提取出来，填入 `input_content`。
+        不要让 `input_content` 包含其他任务的信息。实现信息的物理隔离。
         """
 
         # 2. 调用 Planner
@@ -153,8 +156,16 @@ def complete_current_task(state: agentState, agent_name: str):
     return new_board
 
 async def ticket_node(state: agentState):
+    # 1. 从看板获取【纯净输入】
+    board = state.get("task_board", [])
+    isolated_input = ""
+    for task in board:
+        if task['task_type'] == "ticket_agent" and task['status'] == 'pending':
+            isolated_input = task['input_content']
+            break
     sys_msg = SystemMessage(content="你是票务专家。只回答票务问题，不要管投诉。")
-    response = await llm.ainvoke([sys_msg] + state["messages"])
+    human_msg = HumanMessage(content=isolated_input)
+    response = await llm.ainvoke([sys_msg, human_msg])
     
     # 销账
     updated_board = complete_current_task(state, "ticket_agent")
@@ -166,7 +177,16 @@ async def ticket_node(state: agentState):
 
 async def complaint_node(state: agentState):
     sys_msg = SystemMessage(content="你是投诉专员。只回答投诉问题，不要管票务。")
-    response = await llm.ainvoke([sys_msg] + state["messages"])
+    board = state.get("task_board", [])
+    isolated_input = ""
+    for task in board:
+        if task['task_type'] == "complaint_agent" and task['status'] == 'pending':
+            isolated_input = task['input_content']
+            break
+
+    human_msg = HumanMessage(content=isolated_input)
+    
+    response = await llm.ainvoke([sys_msg, human_msg])
     
     updated_board = complete_current_task(state, "complaint_agent")
     
@@ -176,8 +196,15 @@ async def complaint_node(state: agentState):
     }
 
 async def chat_node(state: agentState):
+    board = state.get("task_board", [])
+    isolated_input = ""
+    for task in board:
+        if task['task_type'] == "general_chat" and task['status'] == 'pending':
+            isolated_input = task['input_content']
+            break
     sys_msg = SystemMessage(content="你是闲聊助手。")
-    response = await llm.ainvoke([sys_msg] + state["messages"])
+    human_msg = HumanMessage(content=isolated_input)
+    response = await llm.ainvoke([sys_msg, human_msg])
     
     updated_board = complete_current_task(state, "general_chat")
     
