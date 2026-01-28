@@ -14,34 +14,29 @@ from state import agentState
 from utils import complete_current_task, llm
 
 # ==========================================
-# 1. 连接 Milvus 向量数据库
+# 1. 连接 Milvus 向量数据库 (保持不变)
 # ==========================================
 
-# --- 1.1 环境清理 (与 build_knowledge.py 保持一致) ---
+# --- 1.1 环境清理 ---
 for key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "grpc_proxy", "GRPC_PROXY"]:
     if key in os.environ:
         del os.environ[key]
-# 确保直连 Docker
 os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0,::1"
 
-# --- 1.2 关键修正：配置参数 ---
-# 修正 1: 使用 tcp:// 协议 (刚才验证成功的)
+# --- 1.2 配置参数 ---
 MILVUS_URI = "tcp://127.0.0.1:29530" 
 COLLECTION_NAME = "metro_knowledge"
-# 修正 2: 指向本地模型路径 (确保离线可用)
 LOCAL_MODEL_PATH = "./models/bge-small-zh-v1.5"
 
 print(f">>> [General Chat] 正在初始化... (Milvus: {MILVUS_URI}, Model: {LOCAL_MODEL_PATH})")
 
 try:
-    # 初始化 Embedding (使用本地模型)
     embeddings = HuggingFaceEmbeddings(
         model_name=LOCAL_MODEL_PATH,
         model_kwargs={'device': 'cpu'},
         encode_kwargs={'normalize_embeddings': True}
     )
 
-    # 初始化向量库连接
     vector_store = Milvus(
         embedding_function=embeddings,
         collection_name=COLLECTION_NAME,
@@ -56,12 +51,11 @@ try:
     
 except Exception as e:
     print(f">>> ❌ [General Chat] 初始化失败: {e}")
-    # 这里可以抛出异常，或者让后续工具调用时报错
     vector_store = None
 
 
 # ==========================================
-# 2. 定义工具 (Tools)
+# 2. 定义工具 (Tools) (保持不变)
 # ==========================================
 @tool
 def lookup_policy(query: str) -> str:
@@ -73,7 +67,6 @@ def lookup_policy(query: str) -> str:
         return "系统错误：知识库未正确初始化。"
 
     try:
-        # 检索最相关的 3 个片段
         retriever = vector_store.as_retriever(
             search_type="similarity_score_threshold",
             search_kwargs={"k": 5, "score_threshold": 0.4}
@@ -83,7 +76,6 @@ def lookup_policy(query: str) -> str:
         if not docs:
             return "未在知识库中找到相关规定。"
         
-        # 优化返回格式，增加来源文件名
         results = []
         for i, doc in enumerate(docs):
             source = doc.metadata.get("source_filename", "未知来源")
@@ -95,12 +87,11 @@ def lookup_policy(query: str) -> str:
     except Exception as e:
         return f"系统错误：无法连接知识库服务器 ({str(e)})。请联系管理员。"
 
-# 将工具放入列表
 tools = [lookup_policy]
 
 
 # ==========================================
-# 3. 手动构建 ReAct 子图 (Sub-Graph)
+# 3. ReAct 子图 (Sub-Graph) (保持不变)
 # ==========================================
 class SubAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
@@ -120,19 +111,25 @@ rag_workflow.add_edge("tools", "agent")
 rag_app = rag_workflow.compile()
 
 # ==========================================
-# 4. 主函数
+# 4. 主函数 (核心修改)
 # ==========================================
 async def general_chat(state: agentState):
+    # 1. 凭令牌取任务 (ID Routing)
+    current_id = state.get("current_task_id")
     board = state.get("task_board", [])
-    isolated_input = ""
+    
+    target_task = None
     for task in board:
-        if task['task_type'] == "general_chat" and task['status'] == 'pending':
-            isolated_input = task['input_content']
+        if task['id'] == current_id:
+            target_task = task
             break
             
-    if not isolated_input:
+    if not target_task:
         return {"task_board": board}
 
+    isolated_input = target_task['input_content']
+
+    # 2. 定义 Prompt
     system_prompt = """
     你是一个亲切、专业的地铁综合服务助手。
     你的主要职责是陪乘客闲聊，或者解答一些通用的地铁政策问题。
@@ -157,13 +154,15 @@ async def general_chat(state: agentState):
         ]
     }
     
-    # 运行子图
+    # 3. 运行 RAG 子图
     result = await rag_app.ainvoke(inputs)
     final_content = result["messages"][-1].content
-    updated_board = complete_current_task(state, "general_chat")
+    
+    # 4. 销账并保存结果
+    updated_board = complete_current_task(state, result=final_content)
 
     return {
         "messages": [AIMessage(content=final_content, name="general_chat")],
-        "task_board": updated_board,
-        "task_results": {"general_chat": final_content}
+        "task_board": updated_board
+        # "task_results": ... <-- 已移除
     }

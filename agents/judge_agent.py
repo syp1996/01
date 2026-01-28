@@ -1,3 +1,11 @@
+'''
+Author: Yunpeng Shi y.shi27@newcastle.ac.uk
+Date: 2026-01-27 10:57:25
+LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
+LastEditTime: 2026-01-28 13:40:12
+FilePath: /01/agents/judge_agent.py
+Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+'''
 from typing import Annotated, List, TypedDict
 
 from langchain_community.tools import DuckDuckGoSearchRun
@@ -10,14 +18,9 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from state import agentState
 from utils import complete_current_task, llm
 
-# --- 1. 定义搜索工具 ---
-# DuckDuckGo 是免费的，适合开发测试。生产环境建议换成 Tavily 或 Google Serper
+# --- 工具和子图定义保持不变 ---
 search_tool = DuckDuckGoSearchRun()
-
-# 定义工具列表
 tools = [search_tool]
-
-# --- 2. 构建 ReAct 子图 ---
 
 class JudgeAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
@@ -28,31 +31,31 @@ def call_model(state: JudgeAgentState):
     response = llm_with_tools.invoke(state["messages"])
     return {"messages": [response]}
 
-# 构建图
 judge_workflow = StateGraph(JudgeAgentState)
 judge_workflow.add_node("agent", call_model)
 judge_workflow.add_node("tools", ToolNode(tools))
-
 judge_workflow.add_edge(START, "agent")
 judge_workflow.add_conditional_edges("agent", tools_condition)
 judge_workflow.add_edge("tools", "agent")
-
 judge_app = judge_workflow.compile()
 
 
-# --- 3. 主函数 ---
-
+# --- 主函数 (核心修改) ---
 async def judge_agent(state: agentState):
-    # 1. 提取任务
+    # 1. 凭令牌取任务
+    current_id = state.get("current_task_id")
     board = state.get("task_board", [])
-    isolated_input = ""
+    
+    target_task = None
     for task in board:
-        if task['task_type'] == "judge_agent" and task['status'] == 'pending':
-            isolated_input = task['input_content']
+        if task['id'] == current_id:
+            target_task = task
             break
             
-    if not isolated_input:
+    if not target_task:
         return {"task_board": board}
+
+    isolated_input = target_task['input_content']
 
     # 2. 准备 Prompt
     system_prompt = """
@@ -76,11 +79,10 @@ async def judge_agent(state: agentState):
     result = await judge_app.ainvoke(inputs)
     final_content = result["messages"][-1].content
 
-    # 4. 销账
-    updated_board = complete_current_task(state, "judge_agent")
+    # 4. 销账 (传入结果)
+    updated_board = complete_current_task(state, result=final_content)
 
     return {
         "messages": [AIMessage(content=final_content, name="judge_agent")],
-        "task_board": updated_board,
-        "task_results": {"judge_agent": final_content}
+        "task_board": updated_board
     }

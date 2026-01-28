@@ -56,8 +56,16 @@ async def supervisor_node(state: agentState):
 
         plan = await planner_chain.ainvoke(messages)
 
+        # 【关键修改】在存入看板前，确保每个任务都有 ID
+        new_board = []
+        for task in plan.tasks:
+            task_dict = task.model_dump()
+            if not task_dict.get("id"):
+                task_dict["id"] = str(uuid.uuid4()) # 双重保险，补全ID
+            new_board.append(task_dict)
+
         # 3. 更新看板
-        new_board = [task.model_dump() for task in plan.tasks]
+        # new_board = [task.model_dump() for task in plan.tasks]
         print(f"[看板创建完毕]: {new_board}")
         
         # 将新生成的看板赋值给 current_board，准备进入路由阶段
@@ -69,21 +77,26 @@ async def supervisor_node(state: agentState):
     # 查找第一个未完成的任务
     pending_task = None
     
-    for i, task in enumerate(current_board):
+    pending_task = None
+    # 查找第一个未完成的任务
+    for task in current_board:
         if task['status'] == 'pending':
             pending_task = task
             break
             
     if pending_task:
         target = pending_task['task_type']
-        print(f"[Supervisor] 发现待办任务: {pending_task['description']} -> 派给 {target}")
+        t_id = pending_task['id']
+        print(f"[Supervisor] 派发任务 ID: {t_id} -> {target}")
+        
         return {
-            "task_board": current_board, # 确保把（可能新建的）看板存回 State
-            "next_step": target
+            "task_board": current_board,
+            "next_step": target,
+            "current_task_id": t_id # 【关键】将令牌传给 Agent
         }
     else:
-        print("[Supervisor] 看板上所有任务已勾选 (Status: done)。结束流程。")
         return {
             "task_board": current_board, 
-            "next_step": "FINISH"
-        }        
+            "next_step": "FINISH",
+            "current_task_id": ""
+        }       

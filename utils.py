@@ -26,15 +26,20 @@ WORKERS_INFO = {
 }
 
 # 3. 通用销账辅助函数
-def complete_current_task(state: agentState, agent_name: str):
+def complete_current_task(state: agentState, result: str = None):
     board = state.get("task_board", [])
+    current_id = state.get("current_task_id") # 获取令牌
+    
+    if not current_id:
+        return board
+
     new_board = []
-    marked = False
     for task in board:
         t = task.copy()
-        # 找到属于该 Agent 且状态为 pending 的第一个任务
-        if not marked and t['task_type'] == agent_name and t['status'] == 'pending':
+        # 精准匹配 ID
+        if t['id'] == current_id:
             t['status'] = 'done'
-            marked = True
+            if result:
+                t['result'] = result # 将结果回写到看板
         new_board.append(t)
     return new_board
