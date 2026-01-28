@@ -1,14 +1,19 @@
+'''
+Author: Yunpeng Shi y.shi27@newcastle.ac.uk
+Date: 2026-01-26 08:49:23
+LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
+FilePath: /01/utils.py
+Description: 并行化改造版 - 移除全局状态依赖
+'''
 import os
+from typing import Any, Dict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
-
-from state import agentState  # 导入状态定义以便做类型提示
 
 load_dotenv()
 
-# 1. 统一初始化 LLM，避免到处写
+# 1. 统一初始化 LLM
 llm = ChatOpenAI(
     model='deepseek-chat', 
     openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
@@ -16,7 +21,7 @@ llm = ChatOpenAI(
     max_tokens=4096
 )
 
-# 2. 定义 Worker 能力描述 (常量)
+# 2. 定义 Worker 能力描述
 WORKERS_INFO = {
     "ticket_agent": "处理票务查询、票价计算、线路查询、首末班车时间。",
     "complaint_agent": "处理用户投诉、服务建议、设施故障反馈、失物招领。",
@@ -25,21 +30,16 @@ WORKERS_INFO = {
     "judge_agent": "负责热点分析,苗头事件,时序预测,线索筛查相关工作。",
 }
 
-# 3. 通用销账辅助函数
-def complete_current_task(state: agentState, result: str = None):
-    board = state.get("task_board", [])
-    current_id = state.get("current_task_id") # 获取令牌
+# 3. 并行销账辅助函数 (核心修改)
+def update_task_result(task: Dict[str, Any], result: str) -> Dict[str, Any]:
+    """
+    接收原始任务字典，返回状态更新后的字典。
+    用于 Worker 节点返回给 Reducer 进行合并。
+    """
+    # 创建副本以避免副作用
+    updated_task = task.copy()
     
-    if not current_id:
-        return board
-
-    new_board = []
-    for task in board:
-        t = task.copy()
-        # 精准匹配 ID
-        if t['id'] == current_id:
-            t['status'] = 'done'
-            if result:
-                t['result'] = result # 将结果回写到看板
-        new_board.append(t)
-    return new_board
+    updated_task['status'] = 'done'
+    updated_task['result'] = result
+    
+    return updated_task

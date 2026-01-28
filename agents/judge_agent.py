@@ -1,10 +1,7 @@
 '''
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
-Date: 2026-01-27 10:57:25
-LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
-LastEditTime: 2026-01-28 13:40:12
 FilePath: /01/agents/judge_agent.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+Description: 并行化改造版 - 包含子图结构
 '''
 from typing import Annotated, List, TypedDict
 
@@ -15,10 +12,10 @@ from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from state import agentState
-from utils import complete_current_task, llm
+from state import WorkerState  # 修改引入
+from utils import llm, update_task_result  # 修改引入
 
-# --- 工具和子图定义保持不变 ---
+# --- 工具和子图定义 (完全保持不变) ---
 search_tool = DuckDuckGoSearchRun()
 tools = [search_tool]
 
@@ -40,24 +37,14 @@ judge_workflow.add_edge("tools", "agent")
 judge_app = judge_workflow.compile()
 
 
-# --- 主函数 (核心修改) ---
-async def judge_agent(state: agentState):
-    # 1. 凭令牌取任务
-    current_id = state.get("current_task_id")
-    board = state.get("task_board", [])
+# --- 主 Agent 函数 (核心修改) ---
+async def judge_agent(state: WorkerState):
+    task = state["task"]
+    isolated_input = task['input_content']
     
-    target_task = None
-    for task in board:
-        if task['id'] == current_id:
-            target_task = task
-            break
-            
-    if not target_task:
-        return {"task_board": board}
+    print(f"[Judge] 正在处理: {isolated_input}")
 
-    isolated_input = target_task['input_content']
-
-    # 2. 准备 Prompt
+    # 保持原有的 Prompt
     system_prompt = """
     你是地铁舆情与社情分析专家。
     你需要对用户的提问进行实时分析。
@@ -68,7 +55,7 @@ async def judge_agent(state: agentState):
     3. 如果没有搜到相关信息，请基于常识回答，并注明信息来源有限。
     """
 
-    # 3. 运行子图
+    # 运行子图
     inputs = {
         "messages": [
             SystemMessage(content=system_prompt),
@@ -79,10 +66,10 @@ async def judge_agent(state: agentState):
     result = await judge_app.ainvoke(inputs)
     final_content = result["messages"][-1].content
 
-    # 4. 销账 (传入结果)
-    updated_board = complete_current_task(state, result=final_content)
+    # 销账
+    updated_task = update_task_result(task, result=final_content)
 
     return {
         "messages": [AIMessage(content=final_content, name="judge_agent")],
-        "task_board": updated_board
+        "task_board": [updated_task]
     }

@@ -1,3 +1,10 @@
+'''
+Author: Yunpeng Shi y.shi27@newcastle.ac.uk
+Date: 2026-01-27 10:57:25
+LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
+FilePath: /01/agents/ticket_agent.py
+Description: 并行化改造版 - 修复旧引用报错
+'''
 from typing import Annotated, List, TypedDict
 
 from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
@@ -7,11 +14,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from state import agentState
-from utils import complete_current_task, llm
+from state import WorkerState  # 【关键】使用 WorkerState
+from utils import (  # 【关键】使用 update_task_result (不再引用 complete_current_task)
+    llm, update_task_result)
 
 
-# --- Tools 定义保持不变 ---
+# --- Tools 定义 (保持不变) ---
 @tool
 def query_ticket_price(start_station: str, end_station: str) -> str:
     """查询杭州地铁两个站点之间的票价。输入为起始站和终点站名称。"""
@@ -33,7 +41,7 @@ def query_train_time(station: str) -> str:
 tools = [query_ticket_price, query_train_time]
 llm_with_tools = llm.bind_tools(tools)
 
-# --- ReAct 微型图定义保持不变 ---
+# --- ReAct 微型图定义 (保持不变) ---
 class SubAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
@@ -50,26 +58,19 @@ worker_workflow.add_edge("tools", "model")
 react_executor = worker_workflow.compile()
 
 
-# --- 主 Agent 节点函数 (核心修改) ---
-async def ticket_agent(state: agentState):
-    # 1. 获取令牌和看板
-    current_id = state.get("current_task_id")
-    board = state.get("task_board", [])
+# --- 主 Agent 节点函数 (核心修复) ---
+async def ticket_agent(state: WorkerState):
+    """
+    接收 WorkerState (包含 task 字典)，返回更新后的 task_board 列表。
+    """
     
-    # 2. 凭令牌取数据
-    target_task = None
-    for task in board:
-        if task['id'] == current_id:
-            target_task = task
-            break
-            
-    if not target_task:
-        # 防御性编程：如果没有找到对应ID的任务，直接返回
-        return {"task_board": board}
+    # 1. 直接获取任务 (无需遍历)
+    task = state["task"]
+    isolated_input = task['input_content']
+    
+    print(f"[Ticket] 正在处理: {isolated_input}")
 
-    isolated_input = target_task['input_content']
-
-    # 3. 构造 System Prompt
+    # 2. 构造 System Prompt
     sys_msg = SystemMessage(content="""
     你是票务专家。
     你有权限查询真实的票价和时刻表数据库。
@@ -78,16 +79,16 @@ async def ticket_agent(state: agentState):
     只回答票务问题。
     """)
     
-    # 4. 执行微型图
+    # 3. 执行微型图
     inputs = {"messages": [sys_msg, HumanMessage(content=isolated_input)]}
     result = await react_executor.ainvoke(inputs)
     final_response_content = result["messages"][-1].content
     
-    # 5. 销账与返回 (传入结果)
-    updated_board = complete_current_task(state, result=final_response_content)
+    # 4. 销账 (使用新函数 update_task_result)
+    updated_task = update_task_result(task, result=final_response_content)
     
+    # 5. 返回结果 (通过 Reducer 合并)
     return {
         "messages": [AIMessage(content=final_response_content, name="ticket_agent")],
-        "task_board": updated_board
-        # 注意：不再返回 task_results
+        "task_board": [updated_task] 
     }
