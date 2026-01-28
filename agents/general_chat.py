@@ -29,7 +29,7 @@ os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0,::1"
 MILVUS_URI = "tcp://127.0.0.1:29530" 
 COLLECTION_NAME = "metro_knowledge"
 # 修正 2: 指向本地模型路径 (确保离线可用)
-LOCAL_MODEL_PATH = "./models/all-MiniLM-L6-v2"
+LOCAL_MODEL_PATH = "./models/bge-small-zh-v1.5"
 
 print(f">>> [General Chat] 正在初始化... (Milvus: {MILVUS_URI}, Model: {LOCAL_MODEL_PATH})")
 
@@ -74,7 +74,10 @@ def lookup_policy(query: str) -> str:
 
     try:
         # 检索最相关的 3 个片段
-        retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+        retriever = vector_store.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs={"k": 5, "score_threshold": 0.4}
+        )
         docs = retriever.invoke(query)
         
         if not docs:

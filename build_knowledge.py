@@ -16,7 +16,7 @@ RAW_DOCS_DIR = "./data/raw_docs"
 COLLECTION_NAME = "metro_knowledge" 
 LOG_FILE = "./data/indexed_files.json"
 # 指向刚才下载的本地文件夹路径
-LOCAL_MODEL_PATH = "./models/all-MiniLM-L6-v2" 
+LOCAL_MODEL_PATH = "./models/bge-small-zh-v1.5" 
 
 # Milvus 配置
 MILVUS_HOST = "127.0.0.1"
@@ -140,7 +140,7 @@ def build_index():
                 "token": "",
                 "timeout": 30
             },
-            drop_old=False 
+            drop_old=True 
         )
         
         save_processed_log(updated_log)

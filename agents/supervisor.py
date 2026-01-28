@@ -1,3 +1,11 @@
+'''
+Author: Yunpeng Shi y.shi27@newcastle.ac.uk
+Date: 2026-01-27 10:56:42
+LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
+LastEditTime: 2026-01-28 10:04:17
+FilePath: /01/agents/supervisor.py
+Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+'''
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from state import PlanningResponse, agentState
@@ -26,6 +34,13 @@ async def supervisor_node(state: agentState):
         
         可选的处理部门：
         {members_desc}
+        
+        **核心调度原则（请严格遵守）：**
+        1. **General Chat (默认优先级)**: 凡是闲聊、问候、或者是询问普通的地铁政策、规定、建议等，**必须**派发给 `general_chat`。它是系统的默认兜底。
+        2. **Complaint (严格限制)**: 只有当用户**明确表达了强烈的不满、愤怒**，或者**明确要求投诉工作人员/服务**时，才派发给 `complaint_agent`。
+           - 例子："你们这什么服务态度！" -> complaint_agent
+           - 例子："地铁里能吃东西吗？" -> general_chat (不要因为这是“质疑”就当成投诉)
+        3. **Ticket**: 仅涉及具体的“票价查询”或“时刻表查询”时，派发给 `ticket_agent`。
         
         要求：
         1. 如果用户有多个意图，请拆分成多个任务。
