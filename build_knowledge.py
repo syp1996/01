@@ -1,24 +1,28 @@
 import json
 import os
-import time
+import sys
 from typing import Dict, List
 
 from dotenv import load_dotenv
 from langchain_community.document_loaders import TextLoader
-from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_milvus import Milvus
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
-# --- 配置路径 ---
+# --- 配置 ---
 RAW_DOCS_DIR = "./data/raw_docs"
-VECTOR_DB_DIR = "./data/vector_store"
-INDEX_NAME = "metro_knowledge"
-LOG_FILE = "./data/indexed_files.json"  # 新增：用于记录已索引文件的日志
+COLLECTION_NAME = "metro_knowledge" 
+LOG_FILE = "./data/indexed_files.json"
+# 指向刚才下载的本地文件夹路径
+LOCAL_MODEL_PATH = "./models/all-MiniLM-L6-v2" 
+
+# Milvus 配置
+MILVUS_HOST = "127.0.0.1"
+MILVUS_PORT = 29530 
 
 def load_processed_log() -> Dict[str, float]:
-    """加载已处理文件的记录 (文件名: 最后修改时间)"""
     if os.path.exists(LOG_FILE):
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
@@ -28,12 +32,10 @@ def load_processed_log() -> Dict[str, float]:
     return {}
 
 def save_processed_log(log_data: Dict[str, float]):
-    """保存已处理文件的记录"""
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(log_data, f, ensure_ascii=False, indent=2)
 
 def get_all_files(directory: str, ext: str = ".txt") -> List[str]:
-    """获取目录下所有指定后缀的文件路径"""
     file_paths = []
     for root, _, files in os.walk(directory):
         for file in files:
@@ -42,92 +44,116 @@ def get_all_files(directory: str, ext: str = ".txt") -> List[str]:
     return file_paths
 
 def build_index():
-    print(">>> [增量构建] 正在检查文件变更...")
+    # ==========================================
+    # 0. 环境清理 (最先执行，防止干扰)
+    # ==========================================
+    print(">>> [Phase 0] 清理网络代理配置...")
+    # 强力清理所有代理变量
+    for key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "grpc_proxy", "GRPC_PROXY"]:
+        if key in os.environ:
+            del os.environ[key]
     
-    # 1. 初始化 Embedding 模型 (必须与查询时一致)
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    
-    # 2. 加载或初始化向量库
-    vector_store = None
-    if os.path.exists(VECTOR_DB_DIR) and os.path.exists(os.path.join(VECTOR_DB_DIR, f"{INDEX_NAME}.faiss")):
-        try:
-            print(f">>> 发现现有索引，正在加载: {VECTOR_DB_DIR}")
-            vector_store = FAISS.load_local(
-                VECTOR_DB_DIR, 
-                embeddings, 
-                index_name=INDEX_NAME,
-                allow_dangerous_deserialization=True
-            )
-        except Exception as e:
-            print(f">>> 现有索引加载失败 ({e})，将重新构建。")
-    else:
-        print(">>> 未发现现有索引，将新建向量库。")
+    # 设置不走代理的名单
+    os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0,::1"
+    print("    - 代理环境变量已清理，确保直连 Docker。")
 
-    # 3. 对比文件状态，找出需要新增的文件
+    # ==========================================
+    # 1. 加载本地模型 (不联网)
+    # ==========================================
+    print(f">>> [Phase 1] 正在从本地路径加载模型: {LOCAL_MODEL_PATH}")
+    
+    if not os.path.exists(LOCAL_MODEL_PATH):
+        print(f"❌ 错误：找不到模型文件夹 {LOCAL_MODEL_PATH}")
+        print("   请先运行 download_model.py 下载模型！")
+        return
+
+    try:
+        embeddings = HuggingFaceEmbeddings(
+            model_name=LOCAL_MODEL_PATH, # 👈 直接传文件夹路径
+            model_kwargs={'device': 'cpu'}, 
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        print(">>> ✅ 本地模型加载成功！")
+    except Exception as e:
+        print(f">>> ❌ 模型加载失败: {e}")
+        return
+
+    # ==========================================
+    # 2. 处理文件
+    # ==========================================
     processed_log = load_processed_log()
     current_files = get_all_files(RAW_DOCS_DIR)
-    
     new_files = []
     updated_log = processed_log.copy()
-    
+
     for file_path in current_files:
-        # 获取文件最后修改时间
         mtime = os.path.getmtime(file_path)
-        file_name = os.path.relpath(file_path, RAW_DOCS_DIR) # 存相对路径
-        
-        # 判断条件：文件不在日志中，或者文件的修改时间比日志里的新
-        # 注意：FAISS 本地版不支持简单的“更新/删除”操作。
-        # 为了简单起见，这里我们主要处理【新增文件】。
-        # 如果文件被修改了，简单的追加会导致重复。
-        # 工业级方案通常需要 ID 管理，这里我们采用“只处理未记录的新文件”策略。
-        if file_name not in processed_log:
+        file_name = os.path.relpath(file_path, RAW_DOCS_DIR)
+        if file_name not in processed_log: # 简单逻辑：只看文件名是否记录过
             new_files.append(file_path)
             updated_log[file_name] = mtime
-        # 如果想处理修改过的文件，需要先从库里删除旧 ID（复杂），或者建议用户定期全量重构。
 
     if not new_files:
         print(">>> 没有发现新文件，无需更新。")
         return
 
     print(f">>> 发现 {len(new_files)} 个新文件，准备处理...")
-    for f in new_files:
-        print(f"    + {os.path.basename(f)}")
-
-    # 4. 加载并切分新文件
+    
     docs = []
     for file_path in new_files:
         try:
             loader = TextLoader(file_path, encoding="utf-8")
-            docs.extend(loader.load())
+            loaded_docs = loader.load()
+            # 优化：增加 source 元数据
+            for doc in loaded_docs:
+                doc.metadata["source_filename"] = os.path.basename(file_path)
+            docs.extend(loaded_docs)
         except Exception as e:
-            print(f"    x 加载文件失败 {file_path}: {e}")
+            print(f"    x 读取失败: {file_path}, {e}")
 
     if not docs:
         return
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=600,
-        chunk_overlap=100,
+        chunk_size=600, chunk_overlap=100,
         separators=["\n\n", "\n", "。", "！", "？", " ", ""]
     )
     splits = text_splitter.split_documents(docs)
-    print(f">>> 切分完成，共生成 {len(splits)} 个新切片。正在向量化...")
+    print(f">>> 切分完成，共 {len(splits)} 个切片。")
 
-    # 5. 更新向量库 (Add vs Create)
-    if vector_store:
-        # 如果库已存在，使用 add_documents 追加
-        vector_store.add_documents(splits)
-        print(">>> 新切片已追加到现有索引。")
-    else:
-        # 如果库不存在，使用 from_documents 创建
-        vector_store = FAISS.from_documents(splits, embedding=embeddings)
-        print(">>> 已创建新索引。")
-
-    # 6. 保存索引和日志
-    vector_store.save_local(VECTOR_DB_DIR, index_name=INDEX_NAME)
-    save_processed_log(updated_log)
+    # ==========================================
+    # 3. 推送到 Milvus
+    # ==========================================
     
-    print(f">>> 更新完成！索引已保存至 {VECTOR_DB_DIR}")
+    # ⚠️ 关键修改：URI 格式必须带 http://
+    milvus_uri = f"tcp://{MILVUS_HOST}:{MILVUS_PORT}" 
+    
+    print(f">>> 正在连接 Milvus: {milvus_uri}")
+
+    try:
+        Milvus.from_documents(
+            splits,
+            embeddings,
+            collection_name=COLLECTION_NAME,
+            connection_args={
+                "uri": milvus_uri,  # 结果: tcp://127.0.0.1:29530
+                "token": "",
+                "timeout": 30
+            },
+            drop_old=False 
+        )
+        
+        save_processed_log(updated_log)
+        print(f">>> 成功！数据已写入 Milvus 集合: {COLLECTION_NAME}")
+        
+    except Exception as e:
+        print(f"\n>>> [错误] 推送失败: {e}")
+        # 如果是连接错误，打印更详细的提示
+        if "connect" in str(e).lower():
+            print("\n建议排查步骤:")
+            print(f"1. 终端执行: nc -zv {MILVUS_HOST} {MILVUS_PORT}")
+            print("2. 确保 VPN 已彻底关闭")
+            print("3. 确保 Docker 容器正在运行 (docker ps)")
 
 if __name__ == "__main__":
     build_index()
