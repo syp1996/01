@@ -17,51 +17,62 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from state import WorkerState
 from utils import llm, update_task_result
 
-# --- 1.1 环境清理 ---
-for key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "grpc_proxy", "GRPC_PROXY"]:
-    if key in os.environ:
-        del os.environ[key]
-os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0,::1"
+# --- 全局变量先设为 None ---
+vector_store = None
+embeddings = None
 
-# --- 1.2 配置参数 ---
-MILVUS_URI = "tcp://127.0.0.1:29530" 
-COLLECTION_NAME = "metro_knowledge"
-LOCAL_MODEL_PATH = "./models/bge-small-zh-v1.5"
-
-print(f">>> [General Chat] 正在初始化... (Milvus: {MILVUS_URI})")
-
-try:
-    embeddings = HuggingFaceEmbeddings(
-        model_name=LOCAL_MODEL_PATH,
-        model_kwargs={'device': 'cpu'},
-        encode_kwargs={'normalize_embeddings': True}
-    )
-
-    vector_store = Milvus(
-        embedding_function=embeddings,
-        collection_name=COLLECTION_NAME,
-        connection_args={
-            "uri": MILVUS_URI,
-            "token": "",
-            "timeout": 30
-        },
-        index_params={"metric_type": "L2", "index_type": "HNSW", "params": {"M": 8, "efConstruction": 64}},
-        auto_id=True
-    )
-    print(">>> [General Chat] RAG 组件加载成功！")
+def get_vector_store():
+    """懒加载函数：只有在真正需要的时候才初始化连接"""
+    global vector_store, embeddings
     
-except Exception as e:
-    print(f">>> ❌ [General Chat] 初始化失败: {e}")
-    vector_store = None
+    # 如果已经初始化过，直接返回
+    if vector_store is not None:
+        return vector_store
 
-@tool
-def lookup_policy(query: str) -> str:
-    """查询地铁相关规章制度、乘车守则等官方文档。"""
-    if not vector_store:
-        return "系统错误：知识库未正确初始化。"
+    print(f">>> [General Chat] 正在初始化 Milvus 连接... (延迟加载)")
+    
+    # 这里定义配置
+    MILVUS_URI = "tcp://127.0.0.1:29530" 
+    COLLECTION_NAME = "metro_knowledge"
+    LOCAL_MODEL_PATH = "./models/bge-small-zh-v1.5"
 
     try:
-        retriever = vector_store.as_retriever(
+        embeddings = HuggingFaceEmbeddings(
+            model_name=LOCAL_MODEL_PATH,
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+
+        vector_store = Milvus(
+            embedding_function=embeddings,
+            collection_name=COLLECTION_NAME,
+            connection_args={
+                "uri": MILVUS_URI,
+                "token": "",
+                "timeout": 30
+            },
+            index_params={"metric_type": "L2", "index_type": "HNSW", "params": {"M": 8, "efConstruction": 64}},
+            auto_id=True
+        )
+        print(">>> [General Chat] RAG 组件加载成功！")
+        return vector_store
+        
+    except Exception as e:
+        print(f">>> ❌ [General Chat] 初始化失败: {e}")
+        return None
+
+@tool
+async def lookup_policy(query: str) -> str:
+    """查询地铁相关规章制度、乘车守则等官方文档。"""
+    
+    # 在主事件循环中获取 store，这下有 Loop 了
+    store = get_vector_store()
+    
+    if not store:
+        return "系统错误：知识库未正确初始化（请检查 Milvus 服务或控制台报错日志）。"
+
+    try:
+        retriever = store.as_retriever(
             search_type="similarity_score_threshold",
             search_kwargs={
                 "k": 5, 
@@ -69,7 +80,9 @@ def lookup_policy(query: str) -> str:
                 "param": {"metric_type": "L2", "nprobe": 10} 
             }
         )
-        docs = retriever.invoke(query)
+        
+        # 2. 检索也建议改为异步调用 (await .ainvoke)
+        docs = await retriever.ainvoke(query)
         
         if not docs:
             return "未在知识库中找到相关规定。"
@@ -77,14 +90,12 @@ def lookup_policy(query: str) -> str:
         results = []
         for i, doc in enumerate(docs):
             source = doc.metadata.get('source_filename', '未知')
-            # 避开 f-string 反斜杠限制
             clean_content = doc.page_content.replace('\n', ' ')
             results.append(f"【条款 {i+1}】(来源: {source}): {clean_content}")
             
         return "\n\n".join(results)
     except Exception as e:
-        return f"系统错误：无法连接知识库服务器 ({str(e)})。"
-
+        return f"系统错误：知识库检索失败 ({str(e)})。"
 # --- 2. ReAct 子图定义 (修复报错的关键部分) ---
 
 tools = [lookup_policy]
