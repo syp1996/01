@@ -91,3 +91,10 @@ def get_vector_store():
     except Exception as e:
         logger.error(f"向量库初始化失败: {e}")
         return None
+    
+def complete_current_task(task, result):
+    """更新任务状态的辅助函数 (原 update_task_result)"""
+    task['status'] = 'done'
+    task['result'] = result
+    logger.info(f"任务完成: ID={task.get('id')} 类型={task.get('task_type')}")
+    return task
