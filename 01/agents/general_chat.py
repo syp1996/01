@@ -1,25 +1,23 @@
 '''
 Author: Yunpeng Shi
-Description: 修复 Mock 拦截逻辑
+Description: 修复 Mock 拦截逻辑 (01目录副本)
 '''
 import os
 from typing import Annotated, List, TypedDict
 
-import utils  # ✅ 关键：只导入整个模块
+import utils  # ✅ 导入整个 utils
 from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage, SystemMessage)
 from langchain_core.tools import tool
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from state import WorkerState
-
-# ⚠️ 注意：不要在这里写 from utils import get_vector_store，否则 Mock 会失效
+from state import WorkerState 
 
 @tool
 async def lookup_policy(query: str) -> str:
     """查询地铁相关规章制度、乘车守则等官方文档。"""
     
-    # ✅ 修正：通过模块名动态调用。这样测试里的 patch 才能拦截到
+    # ✅ 动态获取，支持 Mock
     store = utils.get_vector_store()
     
     if not store:
@@ -43,4 +41,45 @@ async def lookup_policy(query: str) -> str:
     except Exception as e:
         return f"系统错误：知识库检索失败 ({str(e)})。"
 
-# ...（下方 general_chat 函数中涉及 update_task_result 的地方，也请确保使用的是 utils.update_task_result 或正确导入）
+tools = [lookup_policy]
+llm_with_tools = utils.llm.bind_tools(tools)
+
+class SubAgentState(TypedDict):
+    messages: Annotated[List[BaseMessage], add_messages]
+
+def call_model(state: SubAgentState):
+    return {"messages": [llm_with_tools.invoke(state["messages"])]}
+
+worker_workflow = StateGraph(SubAgentState)
+worker_workflow.add_node("model", call_model)
+worker_workflow.add_node("tools", ToolNode(tools))
+worker_workflow.add_edge(START, "model")
+worker_workflow.add_conditional_edges("model", tools_condition)
+worker_workflow.add_edge("tools", "model")
+react_app = worker_workflow.compile()
+
+async def general_chat(state: WorkerState):
+    task = state["task"]
+    isolated_input = task['input_content']
+    global_messages = state.get("messages", [])
+    
+    system_prompt = "你是一个亲切、专业的地铁综合服务助手。问规定必须调用 lookup_policy。"
+    
+    inputs = {
+        "messages": [
+            SystemMessage(content=system_prompt),
+            *global_messages[:-1],
+            HumanMessage(content=isolated_input)
+        ]
+    }
+    
+    result = await react_app.ainvoke(inputs)
+    final_content = result["messages"][-1].content
+    
+    # 使用 utils 更新
+    updated_task = utils.update_task_result(task, result=final_content)
+    
+    return {
+        "messages": [AIMessage(content=final_content, name="general_chat")],
+        "task_board": [updated_task]
+    }
