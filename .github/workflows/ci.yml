@@ -20,19 +20,20 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pytest pytest-asyncio pytest-mock
-        # ⚠️ 修正：去掉 01/ 前缀，直接在根目录找
-        pip install -r requirements.txt
+        # ⚠️ 此时 01 已是普通文件夹，必须带上路径
+        pip install -r 01/requirements.txt
 
     - name: Run Tests with pytest
       env: 
-        # ⚠️ 修正：PYTHONPATH 设为工作区根目录
-        PYTHONPATH: ${{ github.workspace }}
+        # ⚠️ 告诉 Python 去 01 文件夹里找 agents 模块
+        PYTHONPATH: ${{ github.workspace }}/01
         DEEPSEEK_API_KEY: "sk-dummy-key"
         DEEPSEEK_BASE_URL: "https://api.deepseek.com"
       run: |
-        # 运行根目录下的 tests 文件夹
+        # 运行测试 (假设 tests 文件夹也在 01 里？还是在根目录？)
+        # 如果 tests 在根目录：
         python -m pytest tests/
+        # 如果 tests 也在 01 里，请改为： python -m pytest 01/tests/
 
   build_image:
     needs: test
@@ -42,5 +43,6 @@ jobs:
     
     - name: Build Docker Image
       run: |
-        # ⚠️ 修正：Dockerfile 也在根目录，直接构建
+        # ⚠️ 进入 01 目录构建，因为 Dockerfile 在那里
+        cd 01
         docker build -t metro-agent:ci-test .
