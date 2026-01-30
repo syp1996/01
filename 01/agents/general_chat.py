@@ -14,8 +14,11 @@ from langchain_milvus import Milvus
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
+# agents/general_chat.py 顶部
+from utils import complete_current_task  # ⚠️ 确保加上 get_vector_store
+from utils import get_vector_store, llm, update_task_result
+
 from state import WorkerState
-from utils import llm, update_task_result
 
 # --- 全局变量先设为 None ---
 vector_store = None

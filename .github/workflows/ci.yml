@@ -25,8 +25,8 @@ jobs:
 
     - name: Run Tests with pytest
       env: 
-        # ⚠️ 告诉 Python 去 01 文件夹里找 agents 模块
-        PYTHONPATH: ${{ github.workspace }}/01
+        # ⚠️ 直接指向工作区根目录，不要再加额外的 /01
+        PYTHONPATH: ${{ github.workspace }}
         DEEPSEEK_API_KEY: "sk-dummy-key"
         DEEPSEEK_BASE_URL: "https://api.deepseek.com"
       run: |
