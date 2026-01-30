@@ -6,75 +6,38 @@ Description: 并行化改造版 - 修复 TypedDict 调用表达式报错 (最终
 import os
 from typing import Annotated, List, TypedDict
 
+# 1. 导入 utils 模块
+import utils
 from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
                                      SystemMessage)
 from langchain_core.tools import tool
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_milvus import Milvus
+# ⚠️ 已删除：本地不再需要引入 Milvus 和 HF，逻辑全部收敛到 utils
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-# agents/general_chat.py 顶部
-from utils import complete_current_task  # ⚠️ 确保加上 get_vector_store
-from utils import get_vector_store, llm, update_task_result
+# 2. 显式导入需要使用的函数，确保测试能 Patch 到它们
+from utils import (complete_current_task, get_vector_store, llm,
+                   update_task_result)
 
 from state import WorkerState
 
-# --- 全局变量先设为 None ---
-vector_store = None
-embeddings = None
-
-def get_vector_store():
-    """懒加载函数：只有在真正需要的时候才初始化连接"""
-    global vector_store, embeddings
-    
-    # 如果已经初始化过，直接返回
-    if vector_store is not None:
-        return vector_store
-
-    print(f">>> [General Chat] 正在初始化 Milvus 连接... (延迟加载)")
-    
-    # 这里定义配置
-    MILVUS_URI = "tcp://127.0.0.1:29530" 
-    COLLECTION_NAME = "metro_knowledge"
-    LOCAL_MODEL_PATH = "./models/bge-small-zh-v1.5"
-
-    try:
-        embeddings = HuggingFaceEmbeddings(
-            model_name=LOCAL_MODEL_PATH,
-            model_kwargs={'device': 'cpu'},
-            encode_kwargs={'normalize_embeddings': True}
-        )
-
-        vector_store = Milvus(
-            embedding_function=embeddings,
-            collection_name=COLLECTION_NAME,
-            connection_args={
-                "uri": MILVUS_URI,
-                "token": "",
-                "timeout": 30
-            },
-            index_params={"metric_type": "L2", "index_type": "HNSW", "params": {"M": 8, "efConstruction": 64}},
-            auto_id=True
-        )
-        print(">>> [General Chat] RAG 组件加载成功！")
-        return vector_store
-        
-    except Exception as e:
-        print(f">>> ❌ [General Chat] 初始化失败: {e}")
-        return None
+# ⚠️ 已删除：本地定义的 get_vector_store 及其全局变量
+# 现在的逻辑是：直接使用从 utils 导入的 get_vector_store
+# 这样测试脚本里的 @patch("utils.get_vector_store") 才能生效
 
 @tool
 async def lookup_policy(query: str) -> str:
     """查询地铁相关规章制度、乘车守则等官方文档。"""
     
-    # 在主事件循环中获取 store，这下有 Loop 了
+    # 3. 这里调用的是 utils.get_vector_store() (虽然写法上没带前缀，但因为它被 from utils import... 导入了)
+    # 测试环境会拦截这个调用，返回 Mock 对象；生产环境会调用 utils 里的真实逻辑。
     store = get_vector_store()
     
     if not store:
         return "系统错误：知识库未正确初始化（请检查 Milvus 服务或控制台报错日志）。"
 
     try:
+        # 获取检索器
         retriever = store.as_retriever(
             search_type="similarity_score_threshold",
             search_kwargs={
@@ -84,7 +47,7 @@ async def lookup_policy(query: str) -> str:
             }
         )
         
-        # 2. 检索也建议改为异步调用 (await .ainvoke)
+        # 异步调用检索
         docs = await retriever.ainvoke(query)
         
         if not docs:
@@ -93,25 +56,27 @@ async def lookup_policy(query: str) -> str:
         results = []
         for i, doc in enumerate(docs):
             source = doc.metadata.get('source_filename', '未知')
+            # 清洗换行符，防止输出格式混乱
             clean_content = doc.page_content.replace('\n', ' ')
             results.append(f"【条款 {i+1}】(来源: {source}): {clean_content}")
             
         return "\n\n".join(results)
     except Exception as e:
         return f"系统错误：知识库检索失败 ({str(e)})。"
-# --- 2. ReAct 子图定义 (修复报错的关键部分) ---
+
+# --- 2. ReAct 子图定义 ---
 
 tools = [lookup_policy]
 llm_with_tools = llm.bind_tools(tools)
 
-# 【修复】显式定义 TypedDict 类，而不是在函数参数里调用构造函数
+# 定义 State 类型
 class SubAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
 def call_model(state: SubAgentState):
     return {"messages": [llm_with_tools.invoke(state["messages"])]}
 
-# 【修复】使用定义好的类
+# 构建图
 rag_workflow = StateGraph(SubAgentState)
 rag_workflow.add_node("agent", call_model)
 rag_workflow.add_node("tools", ToolNode(tools))
@@ -126,12 +91,11 @@ async def general_chat(state: WorkerState):
     task = state["task"]
     isolated_input = task['input_content']
 
-    # 【核心逻辑】获取并处理历史
+    # 获取并处理历史
     global_messages = state.get("messages", [])
     print(f"[General] 正在处理 (RAG已启用): {isolated_input}")
 
-    # 技巧：全局历史的最后一条通常是用户本轮的“复杂指令”（被 Supervisor 拆解前的）。
-    # 为了让 Worker 专注处理 isolated_input，我们通常取“上一轮为止的历史”作为 Context。
+    # 取“上一轮为止的历史”作为 Context
     history_context = global_messages[:-1] if global_messages else []
 
     # 强化 Prompt (Few-Shot)
@@ -151,14 +115,16 @@ async def general_chat(state: WorkerState):
     3. **诚实原则**：如果工具未找到相关信息，请直接告诉用户“暂未查到相关规定”，这种情况下**不需要**加标记。
     """
 
-    # 【构造输入】 System + 历史Context + 当前纯净指令
+    # 构造输入
     inputs = {
         "messages": [SystemMessage(content=system_prompt)] + history_context + [HumanMessage(content=isolated_input)]
     }
+    
+    # 执行 ReAct 流程
     result = await rag_app.ainvoke(inputs)
     final_content = result["messages"][-1].content
     
     return {
         "messages": [AIMessage(content=final_content, name="general_chat")],
         "task_board": [update_task_result(task, result=final_content)]
-    }
+    }    
