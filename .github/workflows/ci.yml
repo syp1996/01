@@ -24,10 +24,9 @@ jobs:
 
     - name: Run Tests with pytest
       env: 
-        # ✅ 关键修正：确保路径包含代码所在的 01 文件夹
+        # ⚠️ 确保只指向 01 目录，不要套娃
         PYTHONPATH: ${{ github.workspace }}/01
         DEEPSEEK_API_KEY: "sk-dummy-key"
         DEEPSEEK_BASE_URL: "https://api.deepseek.com"
       run: |
-        # 假设 tests 文件夹在根目录
         python -m pytest tests/
