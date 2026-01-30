@@ -74,4 +74,4 @@ async def test_lookup_policy_db_error(mock_get_store):
     # 【修正点】使用 .ainvoke
     result = await lookup_policy.ainvoke({"query": "随便查查"})
     
-    assert "系统错误" in result    assert "系统错误" in result
+    assert "系统错误" in result 
