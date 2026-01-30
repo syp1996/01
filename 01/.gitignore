@@ -1,0 +1,40 @@
+# --- 1. 数据库与持久化 (新增) ---
+# Postgres 数据库挂载目录 (非常重要，对应 docker-compose.yml)
+pg_data/
+# Milvus 向量库数据 (如果有本地挂载)
+milvus_data/
+volumes/
+data/
+
+# --- 2. 大模型文件 (建议新增) ---
+# 避免将几个 GB 的模型权重传到 GitHub
+models/
+*.bin
+*.safetensors
+*.onnx
+
+# --- 3. Python 编译与环境 ---
+__pycache__/
+*.pyc
+.venv/
+env/
+venv/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# --- 4. 敏感配置 ---
+# 包含 API Key 和数据库密码，绝对禁止提交
+.env
+.env.*
+
+# --- 5. 系统与 IDE 文件 ---
+# Mac 系统文件 (你正在使用 Mac)
+.DS_Store
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+
+# --- 6. 日志文件 ---
+*.log
