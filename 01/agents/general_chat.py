@@ -6,12 +6,14 @@ import os
 from typing import Annotated, List, TypedDict
 
 import utils  # ✅ 导入整个 utils
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage, SystemMessage)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage)
 from langchain_core.tools import tool
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from state import WorkerState 
+from state import WorkerState
+
 
 @tool
 async def lookup_policy(query: str) -> str:
@@ -35,7 +37,10 @@ async def lookup_policy(query: str) -> str:
         
         results = []
         for i, doc in enumerate(docs):
-            results.append(f"【条款 {i+1}】: {doc.page_content.replace('\\n', ' ')}")
+            # [修改] 修复 Python 3.11 f-string 不支持反斜杠的问题
+            # 将 replace 操作移出 f-string
+            clean_content = doc.page_content.replace('\n', ' ')
+            results.append(f"【条款 {i+1}】: {clean_content}")
             
         return "\n\n".join(results)
     except Exception as e:
