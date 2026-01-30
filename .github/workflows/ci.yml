@@ -24,7 +24,6 @@ jobs:
 
     - name: Run Tests with pytest
       env: 
-        # ⚠️ 确保只指向 01 目录，不要套娃
         PYTHONPATH: ${{ github.workspace }}/01
         DEEPSEEK_API_KEY: "sk-dummy-key"
         DEEPSEEK_BASE_URL: "https://api.deepseek.com"
