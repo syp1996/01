@@ -13,7 +13,6 @@ from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-
 from state import WorkerState  # 【关键】使用 WorkerState
 from utils import (  # 【关键】使用 update_task_result (不再引用 complete_current_task)
     llm, update_task_result)
@@ -67,6 +66,10 @@ async def ticket_agent(state: WorkerState):
     # 1. 直接获取任务 (无需遍历)
     task = state["task"]
     isolated_input = task['input_content']
+
+    # 【获取历史】
+    global_messages = state.get("messages", [])
+    history_context = global_messages[:-1] if global_messages else []
     
     print(f"[Ticket] 正在处理: {isolated_input}")
 
@@ -80,7 +83,10 @@ async def ticket_agent(state: WorkerState):
     """)
     
     # 3. 执行微型图
-    inputs = {"messages": [sys_msg, HumanMessage(content=isolated_input)]}
+    # 【注入历史】
+    inputs = {
+        "messages": [sys_msg] + history_context + [HumanMessage(content=isolated_input)]
+    }
     result = await react_executor.ainvoke(inputs)
     final_response_content = result["messages"][-1].content
     

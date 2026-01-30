@@ -11,7 +11,6 @@ from typing import List, Literal
 from langchain_core.messages import HumanMessage, SystemMessage
 # 【修正】Send 位于 langgraph.types，而非 langgraph.graph
 from langgraph.types import Send
-
 from state import PlanningResponse, agentState
 from utils import WORKERS_INFO, llm
 
@@ -90,6 +89,12 @@ def workflow_router(state: agentState) -> Literal["responder_agent"] | List[Send
     print(f"[Router] 并行分发 {len(pending_tasks)} 个任务...")
     
     return [
-        Send(task["task_type"], {"task": task}) 
+        Send(
+            node=task["task_type"], 
+            arg={
+                "task": task,
+                "messages": state["messages"] 
+            }
+        ) 
         for task in pending_tasks
     ]

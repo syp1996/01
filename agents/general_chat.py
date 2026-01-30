@@ -14,7 +14,6 @@ from langchain_milvus import Milvus
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-
 from state import WorkerState
 from utils import llm, update_task_result
 
@@ -112,7 +111,14 @@ rag_app = rag_workflow.compile()
 async def general_chat(state: WorkerState):
     task = state["task"]
     isolated_input = task['input_content']
+
+    # 【核心逻辑】获取并处理历史
+    global_messages = state.get("messages", [])
     print(f"[General] 正在处理 (RAG已启用): {isolated_input}")
+
+    # 技巧：全局历史的最后一条通常是用户本轮的“复杂指令”（被 Supervisor 拆解前的）。
+    # 为了让 Worker 专注处理 isolated_input，我们通常取“上一轮为止的历史”作为 Context。
+    history_context = global_messages[:-1] if global_messages else []
 
     # 强化 Prompt (Few-Shot)
     system_prompt = """你是一个亲切、专业的地铁综合服务助手。
@@ -131,7 +137,10 @@ async def general_chat(state: WorkerState):
     3. **诚实原则**：如果工具未找到相关信息，请直接告诉用户“暂未查到相关规定”，这种情况下**不需要**加标记。
     """
 
-    inputs = {"messages": [SystemMessage(content=system_prompt), HumanMessage(content=isolated_input)]}
+    # 【构造输入】 System + 历史Context + 当前纯净指令
+    inputs = {
+        "messages": [SystemMessage(content=system_prompt)] + history_context + [HumanMessage(content=isolated_input)]
+    }
     result = await rag_app.ainvoke(inputs)
     final_content = result["messages"][-1].content
     

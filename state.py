@@ -71,6 +71,7 @@ class WorkerState(TypedDict):
     Supervisor 使用 Send() 分发任务时，Payload 会匹配这个结构。
     """
     task: Dict[str, Any]
+    messages: List[BaseMessage]  # 【新增】核心：允许 Worker 接收全局历史
 
 
 # --- 全局状态 ---
