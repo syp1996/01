@@ -24,8 +24,10 @@ jobs:
 
     - name: Run Tests with pytest
       env: 
+        # PYTHONPATH 设置为 01 目录，确保能 import agents
         PYTHONPATH: ${{ github.workspace }}/01
         DEEPSEEK_API_KEY: "sk-dummy-key"
         DEEPSEEK_BASE_URL: "https://api.deepseek.com"
       run: |
-        python -m pytest tests/
+        # ✅ 修正：指向新的测试目录 01/tests/
+        python -m pytest 01/tests/

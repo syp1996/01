@@ -7,7 +7,6 @@ import os
 import sys
 
 from dotenv import find_dotenv, load_dotenv
-# ⬇️⬇️⬇️ 【新增】引入向量库相关的包 ⬇️⬇️⬇️
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
@@ -71,7 +70,6 @@ def update_task_result(task, result):
     logger.info(f"任务完成: ID={task.get('id')} 类型={task.get('task_type')}")
     return task
 
-# ⬇️⬇️⬇️ 【新增】RAG 向量库获取函数 ⬇️⬇️⬇️
 def get_vector_store():
     """
     获取向量数据库实例。
@@ -84,17 +82,9 @@ def get_vector_store():
             openai_api_key=api_key,
             openai_api_base=api_base
         )
-        # 这里假设你要加载本地索引，如果不存在也没关系，只要函数定义存在，
-        # 测试代码里的 @patch("utils.get_vector_store") 就能工作。
-        # 如果没有本地索引，可以暂时返回 None 或者新建一个临时的
+        # 这里的 None 只是占位，实际运行时如果需要 FAISS/Milvus 支持，
+        # 需要确保本地文件存在或连接成功。
         return None 
     except Exception as e:
         logger.error(f"向量库初始化失败: {e}")
         return None
-    
-def complete_current_task(task, result):
-    """更新任务状态的辅助函数 (原 update_task_result)"""
-    task['status'] = 'done'
-    task['result'] = result
-    logger.info(f"任务完成: ID={task.get('id')} 类型={task.get('task_type')}")
-    return task
