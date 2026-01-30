@@ -5,6 +5,7 @@ Description: 工业级改造 - FastAPI 服务端 + Postgres 持久化 (稳定版
 import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -27,6 +28,7 @@ from langgraph.graph import END, START, StateGraph
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 from state import agentState
+from utils import logger  # 引入我们刚才配置的 logger
 
 load_dotenv()
 
@@ -102,47 +104,68 @@ class ChatRequest(BaseModel):
 # --- 4. 核心 API 接口 ---
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """
-    SSE 流式接口
-    """
-    async def event_generator() -> AsyncGenerator[str, None]:
-        async with app.state.pool.connection() as conn:
-            # 【关键修改】保持一致，不传 serde 参数
-            checkpointer = AsyncPostgresSaver(conn)
-            
-            workflow = build_graph()
-            graph_app = workflow.compile(checkpointer=checkpointer)
-            
-            config = {"configurable": {"thread_id": request.thread_id}}
-            input_state = {"messages": [HumanMessage(content=request.query)]}
-            
-            started_nodes = set()
+    start_time = time.time()
+    print(f"\n⚡ [Debug Start] 收到请求: {request.thread_id}") 
+    logger.info(f"收到新请求 | ThreadID: {request.thread_id}")
 
-            try:
-                # 使用 v1 版本事件流
+    async def event_generator() -> AsyncGenerator[str, None]:
+        try:
+            print(f"👉 [1] 正在获取数据库连接...")
+            async with app.state.pool.connection() as conn:
+                print(f"✅ [1] 数据库连接获取成功！")
+                
+                checkpointer = AsyncPostgresSaver(conn)
+                print(f"👉 [2] 正在构建图...")
+                workflow = build_graph()
+                graph_app = workflow.compile(checkpointer=checkpointer)
+                print(f"✅ [2] 图构建完成")
+                
+                config = {"configurable": {"thread_id": request.thread_id}}
+                input_state = {"messages": [HumanMessage(content=request.query)]}
+                
+                # 【修复点】补上了这行初始化！
+                started_nodes = set()
+                
+                print(f"👉 [3] 准备开始执行 astream_events (这步会调用 LLM)...")
+                
+                has_event = False
+                
                 async for event in graph_app.astream_events(input_state, config=config, version="v1"):
+                    has_event = True
                     kind = event["event"]
-                    node_name = event.get("metadata", {}).get("langgraph_node", "")
+                    node_name = event.get("metadata", {}).get("langgraph_node", "未知")
                     
-                    # 1. 节点启动事件
+                    # 打印事件流
+                    print(f"🌊 [事件流] 收到事件: {kind} (节点: {node_name})")
+                    
                     if kind == "on_chain_start" and node_name and node_name not in ["__start__", "__end__", "supervisor_node"]:
                         if node_name not in started_nodes:
                             started_nodes.add(node_name)
                             yield f"event: agent_start\ndata: {json.dumps({'agent': node_name})}\n\n"
 
-                    # 2. 消息流式输出事件
                     if kind == "on_chat_model_stream":
                         if node_name == "responder_agent":
                             chunk = event["data"]["chunk"]
                             if chunk.content:
-                                # ensure_ascii=False 解决中文乱码
                                 yield f"event: message\ndata: {json.dumps({'content': chunk.content}, ensure_ascii=False)}\n\n"
+                
+                if not has_event:
+                    print(f"❌ [警告] 循环结束了，但没有收到任何事件！可能是 LLM 没反应。")
+                else:
+                    print(f"✅ [结束] 图执行完毕")
                 
                 yield "event: done\ndata: [DONE]\n\n"
                 
-            except Exception as e:
-                print(f"Server Error: {str(e)}")
-                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                duration = time.time() - start_time
+                logger.info(f"请求处理成功 | 耗时: {duration:.2f}s")
+                
+        except Exception as e:
+            print(f"❌ [严重报错] 捕获到异常: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            logger.error(f"请求处理失败", exc_info=True)
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
