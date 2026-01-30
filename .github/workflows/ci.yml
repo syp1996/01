@@ -1,0 +1,60 @@
+name: Metro Agent CI Pipeline
+
+# 触发机制：Push 到 main 分支或提交 PR 时触发
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # === 第一关：自动化测试 ===
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+    # 1. 拉取代码
+    - uses: actions/checkout@v4
+
+    # 2. 设置 Python 环境
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    # 3. 安装依赖
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-asyncio pytest-mock
+        # ⚠️【修正点1】指向 01 目录下的 requirements.txt
+        if [ -f 01/requirements.txt ]; then pip install -r 01/requirements.txt; fi
+
+    # 4. 运行测试
+    - name: Run Tests with pytest
+      env: 
+        # Mock 环境变量
+        DEEPSEEK_API_KEY: "sk-dummy-test-key"
+        DEEPSEEK_BASE_URL: "https://api.dummy.com"
+        # ⚠️【修正点2】关键！把 01 目录加入 PYTHONPATH
+        # 这样 tests 文件夹里的代码才能 import 01 文件夹里的 agents
+        PYTHONPATH: "${{ github.workspace }}/01"
+      run: |
+        python -m pytest
+
+  # === 第二关：Docker 构建验证 ===
+  build_image:
+    needs: test # 只有测试通过才构建
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Docker Image
+      # ⚠️【修正点3】先 cd 进入 01 目录，再执行构建
+      # 这样 Dockerfile 里的 "COPY . ." 才能正确复制 01 目录下的代码
+      run: |
+        cd 01
+        docker build -t metro-agent:ci-test .
