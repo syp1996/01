@@ -7,7 +7,6 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # === 第一关：自动化测试 ===
   test:
     runs-on: ubuntu-latest
     steps:
@@ -21,20 +20,20 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # ⚠️ 关键：明确指向 01 目录下的文件。如果路径不对，这一步会直接报错
-        pip install -r 01/requirements.txt
+        pip install pytest pytest-asyncio pytest-mock
+        # ⚠️ 修正：去掉 01/ 前缀，直接在根目录找
+        pip install -r requirements.txt
 
     - name: Run Tests with pytest
       env: 
-        # ⚠️ 关键：将 01 目录加入 Python 搜索路径，使 tests 里的代码能找到 agents 模块
-        PYTHONPATH: ${{ github.workspace }}/01
+        # ⚠️ 修正：PYTHONPATH 设为工作区根目录
+        PYTHONPATH: ${{ github.workspace }}
         DEEPSEEK_API_KEY: "sk-dummy-key"
         DEEPSEEK_BASE_URL: "https://api.deepseek.com"
       run: |
-        # 运行根目录下的测试，它会通过 PYTHONPATH 找到 01 里的代码
+        # 运行根目录下的 tests 文件夹
         python -m pytest tests/
 
-  # === 第二关：Docker 构建验证 ===
   build_image:
     needs: test
     runs-on: ubuntu-latest
@@ -43,6 +42,5 @@ jobs:
     
     - name: Build Docker Image
       run: |
-        # ⚠️ 关键：进入 Dockerfile 所在的 01 目录执行构建
-        cd 01
+        # ⚠️ 修正：Dockerfile 也在根目录，直接构建
         docker build -t metro-agent:ci-test .
