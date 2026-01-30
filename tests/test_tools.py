@@ -10,7 +10,7 @@ from agents.general_chat import lookup_policy
 # ---------------------------------------------------------
 
 @pytest.mark.asyncio
-@patch("utils.init_vector_store")
+@patch("utils.get_vector_store")
 async def test_lookup_policy_success(mock_get_store):
     """
     测试: 当知识库返回正常文档时，工具能否正确格式化输出？
@@ -43,7 +43,7 @@ async def test_lookup_policy_success(mock_get_store):
     assert "守则.pdf" in result
 
 @pytest.mark.asyncio
-@patch("utils.init_vector_store")
+@patch("utils.get_vector_store")
 async def test_lookup_policy_empty(mock_get_store):
     """
     测试: 当知识库没有相关内容时，是否返回了友好的提示？
@@ -63,7 +63,7 @@ async def test_lookup_policy_empty(mock_get_store):
     assert result == "未在知识库中找到相关规定。"
 
 @pytest.mark.asyncio
-@patch("utils.init_vector_store")
+@patch("utils.get_vector_store")
 async def test_lookup_policy_db_error(mock_get_store):
     """
     测试: 当数据库连接失败（返回 None）时，是否优雅处理？
