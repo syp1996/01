@@ -19,8 +19,8 @@ LOG_FILE = "./data/indexed_files.json"
 LOCAL_MODEL_PATH = "./models/bge-small-zh-v1.5" 
 
 # Milvus 配置 (使用 TCP 协议)
-MILVUS_HOST = "127.0.0.1"
-MILVUS_PORT = 29530 
+MILVUS_HOST = os.getenv("MILVUS_HOST", "127.0.0.1")
+MILVUS_PORT = os.getenv("MILVUS_PORT", "29530")
 
 # ==========================================
 # 🛠️ 工程师优化点 1: 数据清洗函数

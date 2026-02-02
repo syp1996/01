@@ -1,6 +1,30 @@
 version: '3.5'
 
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: metro_agent_app
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      # 使用服务名作为主机名
+      - DB_URI=postgresql://user:password@postgres:5432/metro_agent_db
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY} 
+      - DEEPSEEK_BASE_URL=https://api.deepseek.com
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./agent_system.log:/app/agent_system.log
   # 新增 PostgreSQL 服务
   postgres:
     image: postgres:16
