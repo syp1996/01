@@ -96,6 +96,6 @@ async def manager_agent(state: WorkerState):
     updated_task = update_task_result(task, result=final_content)
     
     return {
-        "messages": [AIMessage(content=final_content, name="manager_agent")],
+        # 修复：移除 messages 返回，防止污染全局历史
         "task_board": [updated_task]
     }

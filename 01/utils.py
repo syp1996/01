@@ -1,14 +1,17 @@
 '''
 Author: Yunpeng Shi
-Description: 工具类 - 包含 LLM 初始化、日志配置及通用常量
+Description: 工具类 - 包含 LLM 初始化、向量库连接及通用常量 (修复 RAG 卡顿版)
 '''
 import logging
 import os
 import sys
+from functools import lru_cache
 
 from dotenv import find_dotenv, load_dotenv
-from langchain_community.vectorstores import FAISS
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+# 新增：引入 HuggingFace 和 Milvus 依赖
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_milvus import Milvus
+from langchain_openai import ChatOpenAI
 
 # --- 1. 环境变量加载 ---
 env_path = find_dotenv()
@@ -21,12 +24,9 @@ api_base = os.getenv("DEEPSEEK_BASE_URL")
 # 检查配置
 if not api_key:
     print(f"❌ 致命错误: 未检测到 DEEPSEEK_API_KEY！")
-    print(f"   当前尝试加载的 .env 路径: {env_path if env_path else '未找到 .env 文件'}")
-    print("   请确保 .env 文件中包含: DEEPSEEK_API_KEY=sk-xxxx")
     sys.exit(1)
 
 if not api_base:
-    print(f"⚠️ 警告: 未检测到 DEEPSEEK_BASE_URL，将默认使用 DeepSeek 官方地址")
     api_base = "https://api.deepseek.com"
 
 # --- 2. 日志配置 ---
@@ -63,6 +63,37 @@ except Exception as e:
     raise e
 
 # --- 5. 辅助函数 ---
+
+# 【核心修复 1】使用全局变量或 lru_cache 缓存 Embedding 模型
+# 防止每次请求都重新加载模型导致卡顿
+_cached_embeddings = None
+
+def get_embeddings():
+    global _cached_embeddings
+    if _cached_embeddings:
+        return _cached_embeddings
+    
+    # 优先尝试本地模型路径
+    # 注意：确保 download_bge.py 下载的路径与此一致
+    model_path = "./models/bge-small-zh-v1.5"
+    
+    if not os.path.exists(model_path):
+        logger.warning(f"⚠️ 本地模型未找到: {model_path}，尝试使用默认 all-MiniLM-L6-v2 (可能需要下载)")
+        model_path = "sentence-transformers/all-MiniLM-L6-v2"
+    
+    logger.info(f"正在加载 Embedding 模型: {model_path} ...")
+    try:
+        _cached_embeddings = HuggingFaceEmbeddings(
+            model_name=model_path,
+            model_kwargs={'device': 'cpu'}, # Docker 内通常用 CPU
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        logger.info("✅ Embedding 模型加载完成")
+        return _cached_embeddings
+    except Exception as e:
+        logger.error(f"❌ 模型加载失败: {e}")
+        return None
+
 def update_task_result(task, result):
     """更新任务状态的辅助函数"""
     task['status'] = 'done'
@@ -72,19 +103,36 @@ def update_task_result(task, result):
 
 def get_vector_store():
     """
-    获取向量数据库实例。
-    注意：在 CI 测试中，这个函数会被 mock 掉，所以这里提供一个基础实现即可。
+    获取 Milvus 向量数据库实例 (Docker 适配版)
     """
+    embeddings = get_embeddings()
+    if not embeddings:
+        return None
+
+    # 【核心修复 2】正确获取 Docker 内部的网络地址
+    # 在 docker-compose.yml 中，milvus 主机名就是 'milvus'
+    # 内部端口是 19530 (不要用外部的 29530)
+    milvus_host = os.getenv("MILVUS_HOST", "milvus") 
+    milvus_port = os.getenv("MILVUS_PORT", "19530")
+    
+    # 构建连接 URI
+    connection_args = {
+        "uri": f"tcp://{milvus_host}:{milvus_port}",
+        "token": "", # 如果没有设密码留空
+        "timeout": 5 # 设置超时时间，防止无限卡死
+    }
+    
+    collection_name = "metro_knowledge"
+    
     try:
-        # 使用 OpenAI 兼容的 Embedding 模型
-        embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-small",
-            openai_api_key=api_key,
-            openai_api_base=api_base
+        # 尝试连接
+        vector_db = Milvus(
+            embedding_function=embeddings,
+            collection_name=collection_name,
+            connection_args=connection_args,
+            auto_id=True
         )
-        # 这里的 None 只是占位，实际运行时如果需要 FAISS/Milvus 支持，
-        # 需要确保本地文件存在或连接成功。
-        return None 
+        return vector_db
     except Exception as e:
-        logger.error(f"向量库初始化失败: {e}")
+        logger.error(f"❌ 向量库连接失败 (Host: {milvus_host}:{milvus_port}): {e}")
         return None

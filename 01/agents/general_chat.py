@@ -1,6 +1,6 @@
 '''
 Author: Yunpeng Shi
-Description: 修复 Mock 拦截逻辑 (01目录副本)
+Description: 修复 Mock 拦截逻辑 (01目录副本) - 修复死循环版
 '''
 import os
 from typing import Annotated, List, TypedDict
@@ -17,13 +17,16 @@ from state import WorkerState
 
 @tool
 async def lookup_policy(query: str) -> str:
-    """查询地铁相关规章制度、乘车守则等官方文档。"""
+    """
+    检索地铁乘客守则、禁止携带物品、票务规定等【书面规章制度】。
+    注意：不要用此工具查询线路数量、站点信息等事实性知识。
+    """
     
     # ✅ 动态获取，支持 Mock
     store = utils.get_vector_store()
     
     if not store:
-        return "系统错误：知识库未正确初始化。"
+        return "系统提示：知识库服务暂时不可用，请直接根据常识回答。"
 
     try:
         retriever = store.as_retriever(
@@ -33,7 +36,7 @@ async def lookup_policy(query: str) -> str:
         docs = await retriever.ainvoke(query)
         
         if not docs:
-            return "未在知识库中找到相关规定。"
+            return "【检索结果】知识库中未包含相关具体规定。请你基于通用知识回答用户，不要再次尝试检索。"
         
         results = []
         for i, doc in enumerate(docs):
@@ -68,7 +71,19 @@ async def general_chat(state: WorkerState):
     isolated_input = task['input_content']
     global_messages = state.get("messages", [])
     
-    system_prompt = "你是一个亲切、专业的地铁综合服务助手。问规定必须调用 lookup_policy。"
+    # --- 核心修改：防死循环 Prompt ---
+    system_prompt = """
+    你是杭州地铁的综合服务助手。
+    
+    ### 决策逻辑：
+    1. **判断问题类型**：
+       - 如果用户问的是**“能不能带”、“罚款多少”、“票务规则”**等政策类问题 -> **必须调用 `lookup_policy`**。
+       - 如果用户问的是**“有多少条线”、“某站的首班车”**等事实/常识类问题 -> **禁止调用工具**，直接用你的模型知识回答。
+       
+    2. **防死循环机制**：
+       - 如果调用了一次 `lookup_policy` 且返回“未找到”，**严禁再次调用该工具**。
+       - 此时应直接回复：“抱歉，规章库中暂时没有相关记录，但根据一般经验……”，或者直接基于你的常识给出建议。
+    """
     
     inputs = {
         "messages": [
@@ -85,6 +100,6 @@ async def general_chat(state: WorkerState):
     updated_task = utils.update_task_result(task, result=final_content)
     
     return {
-        "messages": [AIMessage(content=final_content, name="general_chat")],
+        # 只返回任务看板更新，防止污染历史
         "task_board": [updated_task]
     }

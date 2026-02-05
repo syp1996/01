@@ -11,7 +11,6 @@ from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-
 from state import WorkerState  # 修改引入
 from utils import llm, update_task_result  # 修改引入
 
@@ -70,6 +69,6 @@ async def judge_agent(state: WorkerState):
     updated_task = update_task_result(task, result=final_content)
 
     return {
-        "messages": [AIMessage(content=final_content, name="judge_agent")],
+        # 修复：移除 messages 返回，防止污染全局历史
         "task_board": [updated_task]
     }

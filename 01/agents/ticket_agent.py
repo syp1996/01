@@ -95,6 +95,6 @@ async def ticket_agent(state: WorkerState):
     
     # 5. 返回结果 (通过 Reducer 合并)
     return {
-        "messages": [AIMessage(content=final_response_content, name="ticket_agent")],
+        # 修复：移除 messages 返回，防止污染全局历史
         "task_board": [updated_task] 
     }
