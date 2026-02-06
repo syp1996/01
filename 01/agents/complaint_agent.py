@@ -1,7 +1,14 @@
 '''
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
-FilePath: /01/agents/complaint_agent.py
-Description: 并行化 ReAct 改造版 - 增加工单录入能力 + 增加思考过程持久化
+Date: 2026-02-05 12:08:44
+LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
+LastEditTime: 2026-02-06 13:51:19
+FilePath: /general_agent/01/agents/complaint_agent.py
+Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+'''
+'''
+Author: Yunpeng Shi
+Description: 投诉智能体 - 引入 CoT 与情感安抚逻辑
 '''
 import uuid
 from typing import Annotated, List, TypedDict
@@ -16,7 +23,7 @@ from state import WorkerState
 from utils import llm, update_task_result
 
 
-# --- 1. 定义工具 (Tools) ---
+# --- Tools 定义 ---
 @tool
 def submit_complaint_ticket(category: str, detail: str) -> str:
     """
@@ -27,60 +34,51 @@ def submit_complaint_ticket(category: str, detail: str) -> str:
     Returns:
         包含工单号的确认信息。
     """
-    # 模拟数据库操作
     ticket_id = f"CPT-{uuid.uuid4().hex[:8].upper()}"
-    print(f"\n[System] 📝 投诉已录入数据库: ID={ticket_id} | 类型={category}")
     return f"投诉已成功归档。工单号: {ticket_id}。处理时效: 24小时内。"
 
 tools = [submit_complaint_ticket]
+llm_with_tools = llm.bind_tools(tools)
 
-# --- 2. 构建 ReAct 子图 ---
+# --- ReAct 微型图 ---
 class SubAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
-# 绑定工具到 LLM
-llm_with_tools = llm.bind_tools(tools)
-
 def call_model(state: SubAgentState):
-    # 调用模型，模型会自动决定是否使用工具
     return {"messages": [llm_with_tools.invoke(state["messages"])]}
 
-# 定义图结构：Model -> Tools -> Model (循环)
 worker_workflow = StateGraph(SubAgentState)
 worker_workflow.add_node("model", call_model)
 worker_workflow.add_node("tools", ToolNode(tools))
-
 worker_workflow.add_edge(START, "model")
 worker_workflow.add_conditional_edges("model", tools_condition)
 worker_workflow.add_edge("tools", "model")
-
 react_app = worker_workflow.compile()
 
-# --- 3. 主 Agent 函数 ---
+# --- 主 Agent 逻辑优化 ---
 async def complaint_agent(state: WorkerState):
     task = state["task"]
     isolated_input = task['input_content']
-    
-    print(f"[Complaint] 正在处理 (ReAct): {isolated_input}")
-
-    # 获取全局历史，保持上下文连贯
     global_messages = state.get("messages", [])
     history_context = global_messages[:-1] if global_messages else []
 
-    # System Prompt：强制要求使用工具
+    # 【核心优化】System Prompt 引入 CoT
     system_prompt = """
-    你是杭州地铁的资深客户投诉专员。
-    你的职责不仅仅是安抚用户，更重要的是**切实解决问题**。
+    你是杭州地铁的**资深客户关怀专员**。面对投诉，你的首要任务是平息愤怒并解决问题。
     
-    ### 核心流程：
-    1. **安抚情绪**：首先对用户的不愉快经历表示歉意。
-    2. **执行录入**：必须调用 `submit_complaint_ticket` 工具，将投诉详情录入系统。
-    3. **反馈结果**：将工具生成的【工单号】反馈给用户，让用户感到放心。
+    ### 🧠 深度思考流程 (CoT):
+    1. **【情绪侦测】**：用户当前的愤怒指数是多少？（低/中/高）。思考一句最合适的共情话术（例如：“听到这个情况我非常抱歉...”）。
+    2. **【关键信息提取】**：从用户的咆哮或描述中提取核心事实 -> `category` (类别) 和 `detail` (详情)。
+    3. **【行动执行】**：调用 `submit_complaint_ticket` 工具进行系统录入。
+    4. **【闭环反馈】**：拿到工单号后，思考如何用专业且让人放心的语气告知用户。
+    5. **关键格式要求：**
+    思考完成后，必须输出 `=====FINAL_ANSWER=====`，然后紧接着输出票价或时间的具体数字/信息。
     
-    请确保语气诚恳、专业。
+    ### 🛡️ 执行原则：
+    - 无论用户态度如何，始终保持冷静和专业。
+    - **必须**调用工具生成工单号，不能口头承诺。
     """
 
-    # 构造输入：System + History + Current Input
     inputs = {
         "messages": [
             SystemMessage(content=system_prompt),
@@ -89,20 +87,14 @@ async def complaint_agent(state: WorkerState):
         ]
     }
     
-    # 执行 ReAct 循环
     result = await react_app.ainvoke(inputs)
     final_content = result["messages"][-1].content
-    
-    # 更新任务状态
     updated_task = update_task_result(task, result=final_content)
     
-    # =========== 【新增】 计算需要持久化的思考过程消息 ===========
     input_len = len(inputs["messages"])
     generated_messages = result["messages"][input_len:]
-    # ========================================================
 
     return {
         "task_board": [updated_task],
-        # 【关键修复】
         "messages": generated_messages
     }

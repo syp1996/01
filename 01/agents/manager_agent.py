@@ -1,7 +1,14 @@
 '''
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
-FilePath: /01/agents/manager_agent.py
-Description: 并行化 ReAct 改造版 - 增加内部管理查询能力 + 增加思考过程持久化
+Date: 2026-02-05 12:08:44
+LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
+LastEditTime: 2026-02-06 13:51:27
+FilePath: /general_agent/01/agents/manager_agent.py
+Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+'''
+'''
+Author: Yunpeng Shi
+Description: 管理智能体 - 引入 CoT 与多工具协调逻辑
 '''
 from typing import Annotated, List, TypedDict
 
@@ -15,36 +22,25 @@ from state import WorkerState
 from utils import llm, update_task_result
 
 
-# --- 1. 定义工具 (Tools) ---
+# --- Tools 定义 ---
 @tool
 def query_staff_roster(date: str, station: str = "所有站点") -> str:
-    """
-    查询指定日期、指定站点的员工排班表。
-    Args:
-        date: 日期 (YYYY-MM-DD)
-        station: 站点名称，默认为"所有站点"
-    """
-    # 模拟数据
+    """查询指定日期、指定站点的员工排班表。Args: date (YYYY-MM-DD), station"""
     return f"【{date} 排班表 - {station}】\n早班: 张三 (站长), 李四 (安检)\n晚班: 王五 (值班员)\n状态: 正常"
 
 @tool
 def get_kpi_report(staff_name: str) -> str:
-    """
-    查询指定员工的近期绩效考核评分。
-    Args:
-        staff_name: 员工姓名
-    """
+    """查询指定员工的近期绩效考核评分。"""
     mock_data = {"张三": "A (优秀)", "李四": "B (良好)", "王五": "C (需改进)"}
     score = mock_data.get(staff_name, "未找到该员工记录")
     return f"员工 {staff_name} 的上月绩效评级为: {score}"
 
 tools = [query_staff_roster, get_kpi_report]
+llm_with_tools = llm.bind_tools(tools)
 
-# --- 2. 构建 ReAct 子图 ---
+# --- ReAct 微型图 ---
 class SubAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
-
-llm_with_tools = llm.bind_tools(tools)
 
 def call_model(state: SubAgentState):
     return {"messages": [llm_with_tools.invoke(state["messages"])]}
@@ -52,34 +48,37 @@ def call_model(state: SubAgentState):
 worker_workflow = StateGraph(SubAgentState)
 worker_workflow.add_node("model", call_model)
 worker_workflow.add_node("tools", ToolNode(tools))
-
 worker_workflow.add_edge(START, "model")
 worker_workflow.add_conditional_edges("model", tools_condition)
 worker_workflow.add_edge("tools", "model")
-
 react_app = worker_workflow.compile()
 
-# --- 3. 主 Agent 函数 ---
+# --- 主 Agent 逻辑优化 ---
 async def manager_agent(state: WorkerState):
     task = state["task"]
     isolated_input = task['input_content']
-
-    print(f"[Manager] 正在处理 (ReAct): {isolated_input}")
-    
     global_messages = state.get("messages", [])
     history_context = global_messages[:-1] if global_messages else []
 
-    # System Prompt：设定管理专家人设
+    # 【核心优化】System Prompt 引入 CoT
     system_prompt = """
-    你是杭州地铁的内部管理助手。
-    你的服务对象是地铁工作人员和管理层。
+    你是杭州地铁的**内部运营管理助手**。服务对象是站长和管理层。
     
-    你可以帮助查询排班、考核绩效、或者提供管理建议。
-    
-    **工具使用原则：**
-    1. 当用户问及人员去向、排班情况时，请使用 `query_staff_roster`。
-    2. 当用户问及表现、考核时，请使用 `get_kpi_report`。
-    3. 如果是通用的管理咨询（如：如何提升团队士气），直接依靠你的知识回答即可。
+    ### 🧠 深度思考流程 (CoT):
+    1. **【需求拆解】**：用户是想查“人”（绩效）还是查“事”（排班）？
+    2. **【参数清洗】**：
+       - 查排班：必须明确日期。如果用户说“今天”，请转换为当前日期（假设为 2026-02-06）。
+       - 查绩效：必须明确姓名。
+    3. **【工具路由】**：
+       - 排班 -> `query_staff_roster`
+       - 绩效 -> `get_kpi_report`
+    4. **【数据整合】**：收到工具返回后，整理成简洁的汇报格式。
+    5. **关键格式要求：**
+    思考完成后，必须输出 `=====FINAL_ANSWER=====`，然后紧接着输出票价或时间的具体数字/信息。
+
+    ### 🛡️ 注意事项：
+    - 涉及内部数据，语气要严谨、客观。
+    - 如果缺少关键参数（如查排班没说哪天），请先思考默认值或追问。
     """
     
     inputs = {
@@ -92,16 +91,12 @@ async def manager_agent(state: WorkerState):
     
     result = await react_app.ainvoke(inputs)
     final_content = result["messages"][-1].content
-    
     updated_task = update_task_result(task, result=final_content)
     
-    # =========== 【新增】 计算需要持久化的思考过程消息 ===========
     input_len = len(inputs["messages"])
     generated_messages = result["messages"][input_len:]
-    # ========================================================
 
     return {
         "task_board": [updated_task],
-        # 【关键修复】
         "messages": generated_messages
     }

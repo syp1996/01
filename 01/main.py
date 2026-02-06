@@ -263,6 +263,7 @@ async def delete_thread(thread_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/stream")
+@app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     async def event_generator():
         try:
@@ -272,52 +273,64 @@ async def chat_stream(request: ChatRequest):
                 config = {"configurable": {"thread_id": request.thread_id}}
                 input_state = {"messages": [HumanMessage(content=request.query)]}
                 
+                # 用于追踪当前节点是否已经进入“结论阶段”
+                suppress_thought = False
+                last_node = ""
+
                 # 1. 执行对话流
                 async for event in graph_app.astream_events(input_state, config=config, version="v2"):
                     kind = event["event"]
-                    node_name = event.get("metadata", {}).get("langgraph_node", "")
+                    name = event.get("name", "")
 
-                    if kind == "on_tool_start":
+                    # 1. 处理真实的工具执行 (lookup_policy)
+                    if kind == "on_tool_start" and name != "FinalAnswer":
                         yield format_sse("step", {
-                            "title": f"正在调用工具: {event['name']}...",
+                            "title": f"正在调用工具: {name}...",
                             "status": "loading"
                         })
-                    elif kind == "on_tool_end":
+                    elif kind == "on_tool_end" and name != "FinalAnswer":
                         yield format_sse("step", {
-                            "title": f"工具 {event['name']} 调用完成",
+                            "title": f"工具 {name} 调用完成",
                             "status": "done"
                         })
+                    
+                    # 2. 处理模型流式输出
                     elif kind == "on_chat_model_stream":
                         chunk = event["data"]["chunk"]
-                        content = chunk.content
-                        if content:
-                            if node_name == "responder_agent":
-                                yield format_sse("message", {"content": content})
+                        
+                        # A. 如果是工具调用块 (Tool Call Chunk)
+                        if chunk.tool_call_chunks:
+                            tc_chunk = chunk.tool_call_chunks[0]
+                            # 如果正在组装的是 FinalAnswer
+                            if tc_chunk["name"] == "FinalAnswer" or (tc_chunk["name"] is None and "answer" in tc_chunk["args"]):
+                                # 这是最终答案的参数流，推送到正文
+                                # 注意：tool_call_chunks 的 args 是片段，前端直接拼接到 message 即可
+                                if tc_chunk["args"]:
+                                     yield format_sse("message", {"content": tc_chunk["args"]})
                             else:
-                                yield format_sse("thought", {"content": content})
+                                # 其他工具的参数流，通常不需要推给前端展示细节
+                                pass
 
-                # 2. 对话结束：生成智能标题 (修复 Sidebar 随机名问题)
+                        # B. 如果是普通文本内容 (Content Chunk)
+                        # 在这种模式下，所有普通文本都是“思考”！
+                        elif chunk.content:
+                            yield format_sse("thought", {"content": chunk.content})
+
+                # 2. 对话结束：生成智能标题
                 final_state = await graph_app.aget_state(config)
                 messages = final_state.values.get("messages", [])
                 
-                # 只有在对话轮数较少（通常是第一轮）时才生成标题，避免后续对话覆盖用户自定义的标题
-                # 这里的逻辑可以根据需求调整，比如每次都更新，或者只在没有标题时更新
                 if len(messages) > 0:
-                    # 提取第一轮的问答
                     first_question = ""
                     first_answer = ""
-                    
                     for msg in messages:
                         if isinstance(msg, HumanMessage) and not first_question:
                             first_question = msg.content
                         elif isinstance(msg, AIMessage) and not first_answer and msg.content:
-                            # 排除掉空的 Tool 调用消息，只取有内容的回答
                             first_answer = msg.content
 
-                    # 调用大模型生成标题 (使用 utils.llm)
                     if first_question and first_answer:
-                        from utils import llm  # 延迟导入或确保顶部已导入
-                        
+                        from utils import llm
                         prompt = f"""
                         请根据以下对话内容，提炼一个极简短的标题（不超过 10 个字）。
                         要求：不要使用标点符号，不要包含"标题"二字，直接返回标题内容。
@@ -326,12 +339,9 @@ async def chat_stream(request: ChatRequest):
                         回答：{first_answer[:200]}
                         """
                         try:
-                            # 使用非流式调用生成标题
                             generated_title_msg = await llm.ainvoke([HumanMessage(content=prompt)])
                             title = generated_title_msg.content.strip().replace('"', '').replace('“', '').replace('”', '')
                             
-                            # 3. 持久化标题到数据库 (thread_metadata 表)
-                            # 注意：conn 是外层 context manager 的，这里可以直接用 cursor
                             async with conn.cursor() as cur:
                                 await cur.execute(
                                     """
@@ -340,15 +350,10 @@ async def chat_stream(request: ChatRequest):
                                     """,
                                     (request.thread_id, title)
                                 )
-                                logger.info(f"标题已更新: {title} (ID: {request.thread_id})")
-                            
-                            # 4. 推送标题更新事件给前端 (让前端自动刷新 Sidebar Item)
                             yield format_sse("title_generated", {"title": title, "thread_id": request.thread_id})
-                            
                         except Exception as e:
                             logger.error(f"生成标题失败: {e}")
 
-                # 5. 发送结束信号
                 yield format_sse("done", "[DONE]")
 
         except Exception as e:

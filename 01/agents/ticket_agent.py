@@ -1,20 +1,25 @@
 '''
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
-Date: 2026-01-27 10:57:25
+Date: 2026-02-05 12:08:44
 LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
-FilePath: /01/agents/ticket_agent.py
-Description: 并行化改造版 - 修复旧引用报错 + 增加思考过程持久化
+LastEditTime: 2026-02-06 13:51:02
+FilePath: /general_agent/01/agents/ticket_agent.py
+Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+'''
+'''
+Author: Yunpeng Shi
+Description: 票务智能体 - 引入 CoT 思维链与深度思考
 '''
 from typing import Annotated, List, TypedDict
 
 from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
                                      SystemMessage)
 from langchain_core.tools import tool
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from state import WorkerState  # 【关键】使用 WorkerState
-from utils import llm, update_task_result  # 【关键】使用 update_task_result
+from state import WorkerState
+from utils import llm, update_task_result
 
 
 # --- Tools 定义 (保持不变) ---
@@ -39,67 +44,61 @@ def query_train_time(station: str) -> str:
 tools = [query_ticket_price, query_train_time]
 llm_with_tools = llm.bind_tools(tools)
 
-# --- ReAct 微型图定义 (保持不变) ---
+# --- ReAct 微型图定义 ---
 class SubAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
 def call_model(state: SubAgentState):
-    response = llm_with_tools.invoke(state["messages"])
-    return {"messages": [response]}
+    return {"messages": [llm_with_tools.invoke(state["messages"])]}
 
 worker_workflow = StateGraph(SubAgentState)
 worker_workflow.add_node("model", call_model)
 worker_workflow.add_node("tools", ToolNode(tools))
 worker_workflow.add_edge(START, "model")
-worker_workflow.add_conditional_edges("model", tools_condition) 
+worker_workflow.add_conditional_edges("model", tools_condition)
 worker_workflow.add_edge("tools", "model")
 react_executor = worker_workflow.compile()
 
-
-# --- 主 Agent 节点函数 (核心修复) ---
+# --- 主 Agent 逻辑优化 ---
 async def ticket_agent(state: WorkerState):
-    """
-    接收 WorkerState (包含 task 字典)，返回更新后的 task_board 列表。
-    """
-    
-    # 1. 直接获取任务 (无需遍历)
     task = state["task"]
     isolated_input = task['input_content']
-
-    # 【获取历史】
     global_messages = state.get("messages", [])
     history_context = global_messages[:-1] if global_messages else []
     
-    print(f"[Ticket] 正在处理: {isolated_input}")
-
-    # 2. 构造 System Prompt
+    # 【核心优化】System Prompt 引入 CoT
     sys_msg = SystemMessage(content="""
-    你是票务专家。
-    你有权限查询真实的票价和时刻表数据库。
-    请根据用户的提问，使用工具查询准确信息。
-    不要猜测，必须依据工具返回的结果回答。
-    只回答票务问题。
+    你是杭州地铁的**票务与行程专家**。你的职责是提供精准的出行信息。
+
+    ### 🧠 深度思考流程 (CoT):
+    1. **【站点核对】**：首先分析用户输入的站点名称是否清晰？(例如 "东站" 指的是 "杭州东站")。
+    2. **【意图确认】**：用户是问票价、时间还是路线？
+    3. **【工具决策】**：
+       - 问票价 -> 调用 `query_ticket_price`
+       - 问首末班 -> 调用 `query_train_time`
+    4. **【结果验证】**：工具返回结果后，检查是否合理。如果未查到，思考是否需要提示用户检查站名。
+    5. **关键格式要求：**
+    思考完成后，必须输出 `=====FINAL_ANSWER=====`，然后紧接着输出票价或时间的具体数字/信息。
+
+    ### 🛡️ 约束：
+    - 严禁猜测票价或时间，必须以工具返回结果为准。
+    - 回复要简洁明了，直接给出数字。
     """)
     
-    # 3. 执行微型图
-    # 【注入历史】
     inputs = {
         "messages": [sys_msg] + history_context + [HumanMessage(content=isolated_input)]
     }
+    
     result = await react_executor.ainvoke(inputs)
     final_response_content = result["messages"][-1].content
     
-    # 4. 销账 (使用新函数 update_task_result)
     updated_task = update_task_result(task, result=final_response_content)
     
-    # =========== 【新增】 计算需要持久化的思考过程消息 ===========
+    # 计算增量消息 (用于前端展示思考过程)
     input_len = len(inputs["messages"])
     generated_messages = result["messages"][input_len:]
-    # ========================================================
 
-    # 5. 返回结果 (通过 Reducer 合并)
     return {
         "task_board": [updated_task],
-        # 【关键修复】返回新生成的消息，实现持久化
         "messages": generated_messages
     }
