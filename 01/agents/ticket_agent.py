@@ -3,7 +3,7 @@ Author: Yunpeng Shi y.shi27@newcastle.ac.uk
 Date: 2026-01-27 10:57:25
 LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
 FilePath: /01/agents/ticket_agent.py
-Description: 并行化改造版 - 修复旧引用报错
+Description: 并行化改造版 - 修复旧引用报错 + 增加思考过程持久化
 '''
 from typing import Annotated, List, TypedDict
 
@@ -14,8 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from state import WorkerState  # 【关键】使用 WorkerState
-from utils import (  # 【关键】使用 update_task_result (不再引用 complete_current_task)
-    llm, update_task_result)
+from utils import llm, update_task_result  # 【关键】使用 update_task_result
 
 
 # --- Tools 定义 (保持不变) ---
@@ -93,8 +92,14 @@ async def ticket_agent(state: WorkerState):
     # 4. 销账 (使用新函数 update_task_result)
     updated_task = update_task_result(task, result=final_response_content)
     
+    # =========== 【新增】 计算需要持久化的思考过程消息 ===========
+    input_len = len(inputs["messages"])
+    generated_messages = result["messages"][input_len:]
+    # ========================================================
+
     # 5. 返回结果 (通过 Reducer 合并)
     return {
-        # 修复：移除 messages 返回，防止污染全局历史
-        "task_board": [updated_task] 
+        "task_board": [updated_task],
+        # 【关键修复】返回新生成的消息，实现持久化
+        "messages": generated_messages
     }

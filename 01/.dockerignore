@@ -13,3 +13,19 @@ logs/
 agent_system.log
 Dockerfile
 docker-compose.yml
+
+__pycache__
+*.pyc
+.git
+.env
+venv/
+.vscode/
+
+# --- 新增以下忽略项 ---
+models/
+data/
+pg_data/
+volumes/
+agent_system.log
+*.faiss
+*.pkl

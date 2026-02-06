@@ -1,7 +1,7 @@
 '''
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
 FilePath: /01/agents/complaint_agent.py
-Description: 并行化 ReAct 改造版 - 增加工单录入能力
+Description: 并行化 ReAct 改造版 - 增加工单录入能力 + 增加思考过程持久化
 '''
 import uuid
 from typing import Annotated, List, TypedDict
@@ -96,7 +96,13 @@ async def complaint_agent(state: WorkerState):
     # 更新任务状态
     updated_task = update_task_result(task, result=final_content)
     
+    # =========== 【新增】 计算需要持久化的思考过程消息 ===========
+    input_len = len(inputs["messages"])
+    generated_messages = result["messages"][input_len:]
+    # ========================================================
+
     return {
-        # 修复：移除 messages 返回，防止污染全局历史
-        "task_board": [updated_task]
+        "task_board": [updated_task],
+        # 【关键修复】
+        "messages": generated_messages
     }
