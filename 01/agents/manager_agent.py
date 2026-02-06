@@ -73,8 +73,6 @@ async def manager_agent(state: WorkerState):
        - 排班 -> `query_staff_roster`
        - 绩效 -> `get_kpi_report`
     4. **【数据整合】**：收到工具返回后，整理成简洁的汇报格式。
-    5. **关键格式要求：**
-    思考完成后，必须输出 `=====FINAL_ANSWER=====`，然后紧接着输出票价或时间的具体数字/信息。
 
     ### 🛡️ 注意事项：
     - 涉及内部数据，语气要严谨、客观。

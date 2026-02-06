@@ -2,7 +2,7 @@
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
 Date: 2026-02-05 12:08:44
 LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
-LastEditTime: 2026-02-06 13:51:19
+LastEditTime: 2026-02-06 15:08:16
 FilePath: /general_agent/01/agents/complaint_agent.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
@@ -71,8 +71,6 @@ async def complaint_agent(state: WorkerState):
     2. **【关键信息提取】**：从用户的咆哮或描述中提取核心事实 -> `category` (类别) 和 `detail` (详情)。
     3. **【行动执行】**：调用 `submit_complaint_ticket` 工具进行系统录入。
     4. **【闭环反馈】**：拿到工单号后，思考如何用专业且让人放心的语气告知用户。
-    5. **关键格式要求：**
-    思考完成后，必须输出 `=====FINAL_ANSWER=====`，然后紧接着输出票价或时间的具体数字/信息。
     
     ### 🛡️ 执行原则：
     - 无论用户态度如何，始终保持冷静和专业。
