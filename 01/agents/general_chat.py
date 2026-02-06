@@ -1,6 +1,6 @@
 '''
 Author: Yunpeng Shi
-Description: 修复 Mock 拦截逻辑 (01目录副本) - 修复死循环版
+Description: 修复 Mock 拦截逻辑 (01目录副本) - 修复死循环版 + 增加思考过程持久化
 '''
 import os
 from typing import Annotated, List, TypedDict
@@ -99,7 +99,17 @@ async def general_chat(state: WorkerState):
     # 使用 utils 更新
     updated_task = utils.update_task_result(task, result=final_content)
     
+    # =========== 【新增】 计算需要持久化的思考过程消息 ===========
+    # result["messages"] 包含了 [System, ...History, Input, AI(Think), Tool, AI(Final)...]
+    # 我们只想要 AI(Think), Tool, AI(Final) 这部分
+    # inputs["messages"] 的长度就是我们传入的基础消息长度，之后的就是新生成的
+    input_len = len(inputs["messages"])
+    generated_messages = result["messages"][input_len:]
+    # ========================================================
+
     return {
-        # 只返回任务看板更新，防止污染历史
-        "task_board": [updated_task]
+        # 返回任务看板更新
+        "task_board": [updated_task],
+        # 【关键修复】返回新生成的消息，LangGraph 会将其追加到全局历史，从而实现持久化
+        "messages": generated_messages
     }

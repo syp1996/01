@@ -132,6 +132,17 @@ async def get_history(thread_id: str):
             state = await graph_app.aget_state(config)
             messages = state.values.get("messages", [])
             
+            # =========== 【新增】 详细日志打印，用于验证思考过程是否入库 ===========
+            print(f"\n[Debug History] Thread ID: {thread_id}, Total Messages: {len(messages)}")
+            for i, m in enumerate(messages):
+                # 打印消息类型、内容片段和元数据，方便观察是否包含 tool_calls
+                content_preview = m.content[:50].replace('\n', ' ') + "..." if m.content else "[No Content]"
+                print(f"  [{i}] Type: {m.type:<10} | Content: {content_preview}")
+                if hasattr(m, "tool_calls") and m.tool_calls:
+                    print(f"       -> Tool Calls: {m.tool_calls}")
+            print("=================================================================\n")
+            # ===================================================================
+
             history = []
             current_ai_msg = None
 
