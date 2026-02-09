@@ -1,15 +1,15 @@
 '''
 Author: Yunpeng Shi
-Description: 工业级改造 - 增强型路由逻辑 (彻底修复 Responder 内容泄露到思考区的问题)
+Description: 工业级改造 - 增强型路由逻辑 (深度加固：支持流式多标题解析)
 '''
 import asyncio
 import json
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, List
 
-# 保持原来的导入不变
 from agents.complaint_agent import complaint_agent
 from agents.general_chat import general_chat
 from agents.judge_agent import judge_agent
@@ -45,7 +45,7 @@ def build_graph():
     workflow.add_node("general_chat", general_chat)
     workflow.add_node("manager_agent", manager_agent)
     workflow.add_node("judge_agent", judge_agent)
-    workflow.add_node("responder_agent", responder_agent) # 关键节点名称
+    workflow.add_node("responder_agent", responder_agent)
 
     workflow.add_edge(START, 'supervisor_node')
     workflow.add_conditional_edges(
@@ -91,7 +91,6 @@ class ChatRequest(BaseModel):
 class RenameRequest(BaseModel):
     title: str
 
-# 节点中文映射（用于前端 Step 展示）
 NODE_DISPLAY_NAMES = {
     "supervisor_node": "总控调度中",
     "ticket_agent": "正在查询票务系统",
@@ -103,7 +102,6 @@ NODE_DISPLAY_NAMES = {
 }
 
 # --- 3. 核心 API ---
-
 @app.get("/health")
 def health_check():
     return {"status": "ok", "db": "connected"}
@@ -128,16 +126,13 @@ async def list_threads():
 
 @app.get("/threads/{thread_id}/history")
 async def get_history(thread_id: str):
-    """历史记录逻辑保持不变"""
     try:
         async with app.state.pool.connection() as conn:
             checkpointer = AsyncPostgresSaver(conn)
             graph_app = build_graph().compile(checkpointer=checkpointer)
             config = {"configurable": {"thread_id": thread_id}}
-            
             state = await graph_app.aget_state(config)
             messages = state.values.get("messages", [])
-            
             history = []
             current_ai_msg = None
 
@@ -153,7 +148,6 @@ async def get_history(thread_id: str):
                         next_type = get_val(messages[i+1], "type")
                         if next_type in ("ai", "assistant", "tool"):
                             is_intermediate[i] = True
-                    
                     m_meta = get_val(messages[i], "metadata", {}) or get_val(messages[i], "response_metadata", {})
                     node = m_meta.get("langgraph_node", "")
                     if node and node != "responder_agent":
@@ -165,13 +159,11 @@ async def get_history(thread_id: str):
             for i, msg in enumerate(messages):
                 m_type = get_val(msg, "type")
                 m_content = get_val(msg, "content", "")
-
                 if m_type in ("human", "user"):
                     if current_ai_msg:
                         history.append(current_ai_msg)
                         current_ai_msg = None
                     history.append({"role": "user", "content": m_content})
-                
                 elif m_type in ("ai", "assistant"):
                     if not current_ai_msg:
                         current_ai_msg = {
@@ -179,14 +171,12 @@ async def get_history(thread_id: str):
                             "steps": [], "hasThought": False, "isDoneThinking": True, 
                             "isThoughtExpanded": False 
                         }
-
                     tool_calls = get_val(msg, "tool_calls", []) or get_val(msg, "additional_kwargs", {}).get("tool_calls", [])
                     if tool_calls:
                         current_ai_msg["hasThought"] = True
                         for tc in tool_calls:
                             name = tc.get("function", {}).get("name") if isinstance(tc, dict) else getattr(tc, "name", "unknown")
                             current_ai_msg["steps"].append({"title": f"调用工具: {name}", "status": "done"})
-
                     if is_intermediate[i]:
                         if m_content:
                             current_ai_msg["hasThought"] = True
@@ -194,21 +184,16 @@ async def get_history(thread_id: str):
                     else:
                         if m_content:
                             current_ai_msg["content"] += str(m_content)
-
                     reasoning = get_val(msg, "additional_kwargs", {}).get("reasoning_content", "")
                     if reasoning:
                         current_ai_msg["hasThought"] = True
                         current_ai_msg["thoughts"] += str(reasoning) + "\n"
-
                 elif m_type == "tool":
                     if current_ai_msg:
                         current_ai_msg["hasThought"] = True
-
             if current_ai_msg:
                 history.append(current_ai_msg)
-
             return {"history": history}
-
     except Exception as e:
         logger.error(f"获取历史失败: {e}")
         return {"history": []}
@@ -219,10 +204,7 @@ async def rename_thread(thread_id: str, request: RenameRequest):
         async with app.state.pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    """
-                    INSERT INTO thread_metadata (thread_id, title) VALUES (%s, %s)
-                    ON CONFLICT (thread_id) DO UPDATE SET title = EXCLUDED.title
-                    """,
+                    "INSERT INTO thread_metadata (thread_id, title) VALUES (%s, %s) ON CONFLICT (thread_id) DO UPDATE SET title = EXCLUDED.title",
                     (thread_id.strip(), request.title)
                 )
                 return {"status": "success"}
@@ -243,7 +225,7 @@ async def delete_thread(thread_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# ⚠️ 核心流式接口 - 修复版
+# ⚠️ 核心流式接口 - 深度加固版 (精准解决 Title/Content 状态切换)
 # ============================================================================
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
@@ -256,107 +238,120 @@ async def chat_stream(request: ChatRequest):
                 input_state = {"messages": [HumanMessage(content=request.query)]}
                 
                 active_steps = set()
+                node_state = {} 
 
                 async for event in graph_app.astream_events(input_state, config=config, version="v2"):
                     kind = event["event"]
                     name = event.get("name", "")
+                    run_id = event.get("run_id")
                     
-                    # --- 增强型节点身份识别 ---
-                    # 1. 获取 Metadata 中的节点名
                     meta = event.get("metadata", {})
                     node_from_meta = meta.get("langgraph_node", "")
-                    
-                    # 2. 获取 Tags 中的标签 (LangGraph 通常会把 node name 放入 tags)
                     tags = event.get("tags", [])
-                    
-                    # 3. 判定是否为 responder_agent (只要满足其一即可)
                     is_responder = (node_from_meta == "responder_agent") or ("responder_agent" in tags)
 
-                    # --- Step 1: 处理节点状态 (UI Loading 效果) ---
                     if kind == "on_chain_start" and name in NODE_DISPLAY_NAMES:
-                        # Responder 节点本身不显示为"思考步骤"，它是正在生成回复
                         if name != "responder_agent":
                             step_title = NODE_DISPLAY_NAMES.get(name, f"正在运行 {name}")
-                            yield format_sse("step", {
-                                "title": f"{step_title}...",
-                                "status": "loading"
-                            })
+                            yield format_sse("step", {"title": f"{step_title}...", "status": "loading"})
                             active_steps.add(name)
+                            node_state[run_id] = {"buffer": "", "in_content_mode": False}
 
                     elif kind == "on_chain_end" and name in active_steps:
-                        step_title = NODE_DISPLAY_NAMES.get(name, name)
-                        final_title = step_title.replace("正在", "") + " 完成"
-                        yield format_sse("step", {
-                            "title": final_title,
-                            "status": "done"
-                        })
+                        yield format_sse("step", {"title": NODE_DISPLAY_NAMES.get(name, name).replace("正在", "") + " 完成", "status": "done"})
                         active_steps.remove(name)
+                        if run_id in node_state: del node_state[run_id]
 
-                    # --- Step 2: 处理工具调用 ---
                     elif kind == "on_tool_start" and name != "FinalAnswer":
-                        yield format_sse("step", {
-                            "title": f"正在调用工具: {name}...",
-                            "status": "loading"
-                        })
+                        yield format_sse("step", {"title": f"正在调用工具: {name}...", "status": "loading"})
                     elif kind == "on_tool_end" and name != "FinalAnswer":
-                        yield format_sse("step", {
-                            "title": f"工具 {name} 调用完成",
-                            "status": "done"
-                        })
+                        yield format_sse("step", {"title": f"工具 {name} 调用完成", "status": "done"})
                     
-                    # --- Step 3: 核心文本分流逻辑 ---
                     elif kind == "on_chat_model_stream":
                         chunk = event["data"]["chunk"]
-                        
-                        # A. 优先处理 DeepSeek 风格的原生思考内容
-                        reasoning = chunk.additional_kwargs.get("reasoning_content", "")
-                        if reasoning:
-                             yield format_sse("thought", {"content": reasoning})
+                        content = chunk.content
+                        if not content: continue
 
-                        # B. 处理正文内容 (Content)
-                        if chunk.content:
-                            # 🚨 严格的分流判断 🚨
-                            if is_responder:
-                                # 只有确认是 Responder，才发给聊天气泡
-                                yield format_sse("message", {"content": chunk.content})
-                            else:
-                                # 其他所有节点的输出，全部归类为"思考过程"
-                                # 这样 JudgeAgent/Supervisor 的中间结果就会进入折叠框
-                                yield format_sse("thought", {"content": chunk.content})
+                        if is_responder:
+                            yield format_sse("message", {"content": content})
+                        else:
+                            if run_id not in node_state:
+                                node_state[run_id] = {"buffer": "", "in_content_mode": False}
+                            
+                            state = node_state[run_id]
+                            state["buffer"] += content
+                            
+                            while True:
+                                buf = state["buffer"]
+                                # 1. 尝试寻找新的 Title 块
+                                match = re.search(r"Title:\s*(.*?)\s*(?:\n|Content:)(.*)", buf, re.DOTALL)
+                                
+                                if match:
+                                    title = match.group(1).strip()
+                                    rest = match.group(2)
+                                    # 立即发送步骤更新
+                                    yield format_sse("step", {"title": title, "status": "loading"})
+                                    state["in_content_mode"] = True
+                                    # 处理剩余部分：是否包含下一个 Title:
+                                    next_title_match = re.search(r"(.*?)Title:", rest, re.DOTALL)
+                                    if next_title_match:
+                                        # 当前块内容已全，发送并继续循环
+                                        current_content = next_title_match.group(1).strip()
+                                        if current_content: yield format_sse("thought", {"content": current_content})
+                                        state["buffer"] = rest[len(next_title_match.group(1)):]
+                                        state["in_content_mode"] = False
+                                        continue
+                                    else:
+                                        # 进入纯内容模式，发送并清空
+                                        if rest.strip(): yield format_sse("thought", {"content": rest.strip()})
+                                        state["buffer"] = ""
+                                        break
+                                
+                                # 2. 如果已经处于内容模式，监控是否有新 Title 冒头
+                                elif state["in_content_mode"]:
+                                    if "Title:" in buf:
+                                        idx = buf.find("Title:")
+                                        pre = buf[:idx].strip()
+                                        if pre: yield format_sse("thought", {"content": pre})
+                                        state["buffer"] = buf[idx:]
+                                        state["in_content_mode"] = False
+                                        continue
+                                    else:
+                                        # 安全输出当前所有内容
+                                        yield format_sse("thought", {"content": buf})
+                                        state["buffer"] = ""
+                                        break
+                                
+                                # 3. 降级：缓冲区过大
+                                else:
+                                    if len(buf) > 300:
+                                        yield format_sse("thought", {"content": buf})
+                                        state["buffer"] = ""
+                                        state["in_content_mode"] = True
+                                    break
 
-                # --- 标题生成逻辑 (保持不变) ---
+                # 对话标题生成逻辑...
                 final_state = await graph_app.aget_state(config)
                 messages = final_state.values.get("messages", [])
                 if len(messages) > 0:
-                    first_question = ""
-                    first_answer = ""
-                    for msg in messages:
-                        if isinstance(msg, HumanMessage) and not first_question:
-                            first_question = msg.content
-                        elif isinstance(msg, AIMessage) and not first_answer and msg.content:
-                            first_answer = msg.content
-                    if first_question and first_answer:
+                    fq, fa = "", ""
+                    for m in messages:
+                        if isinstance(m, HumanMessage) and not fq: fq = m.content
+                        elif isinstance(m, AIMessage) and not fa and m.content: fa = m.content
+                    if fq and fa:
                         from utils import llm
-                        prompt = f"请根据以下对话提取不超过10个字的简短标题：\n问：{first_question[:50]}\n答：{first_answer[:50]}"
                         try:
-                            # 使用非流式调用避免干扰
-                            generated_title_msg = await llm.ainvoke([HumanMessage(content=prompt)])
-                            title = generated_title_msg.content.strip().replace('"', '')
+                            prompt = f"请根据以下对话提取不超过10个字的简短标题：\n问：{fq[:50]}\n答：{fa[:50]}"
+                            gen = await llm.ainvoke([HumanMessage(content=prompt)])
+                            title = gen.content.strip().replace('"', '')
                             async with conn.cursor() as cur:
-                                await cur.execute(
-                                    "INSERT INTO thread_metadata (thread_id, title) VALUES (%s, %s) ON CONFLICT (thread_id) DO UPDATE SET title = EXCLUDED.title",
-                                    (request.thread_id, title)
-                                )
+                                await cur.execute("INSERT INTO thread_metadata (thread_id, title) VALUES (%s, %s) ON CONFLICT (thread_id) DO UPDATE SET title = EXCLUDED.title", (request.thread_id, title))
                             yield format_sse("title_generated", {"title": title, "thread_id": request.thread_id})
-                        except Exception:
-                            pass
-
+                        except Exception: pass
                 yield format_sse("done", "[DONE]")
-
         except Exception as e:
             logger.error(f"流式异常: {e}")
             yield format_sse("error", {"error": str(e)})
-
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 if __name__ == "__main__":

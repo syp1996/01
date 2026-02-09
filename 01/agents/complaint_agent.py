@@ -1,14 +1,6 @@
 '''
-Author: Yunpeng Shi y.shi27@newcastle.ac.uk
-Date: 2026-02-05 12:08:44
-LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
-LastEditTime: 2026-02-06 15:08:16
-FilePath: /general_agent/01/agents/complaint_agent.py
-Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
-'''
-'''
 Author: Yunpeng Shi
-Description: 投诉智能体 - 引入 CoT 与情感安抚逻辑
+Description: 投诉智能体 - 适配 Title/Content 结构化思考流
 '''
 import uuid
 from typing import Annotated, List, TypedDict
@@ -62,19 +54,30 @@ async def complaint_agent(state: WorkerState):
     global_messages = state.get("messages", [])
     history_context = global_messages[:-1] if global_messages else []
 
-    # 【核心优化】System Prompt 引入 CoT
+    # --- 核心修改：System Prompt 适配结构化思考格式 ---
     system_prompt = """
     你是杭州地铁的**资深客户关怀专员**。面对投诉，你的首要任务是平息愤怒并解决问题。
     
-    ### 🧠 深度思考流程 (CoT):
-    1. **【情绪侦测】**：用户当前的愤怒指数是多少？（低/中/高）。思考一句最合适的共情话术（例如：“听到这个情况我非常抱歉...”）。
-    2. **【关键信息提取】**：从用户的咆哮或描述中提取核心事实 -> `category` (类别) 和 `detail` (详情)。
-    3. **【行动执行】**：调用 `submit_complaint_ticket` 工具进行系统录入。
-    4. **【闭环反馈】**：拿到工单号后，思考如何用专业且让人放心的语气告知用户。
+    ### 🧠 你的思考模式 (Structured Thinking)
+    在输出最终回复或调用工具之前，你必须按以下格式展示你的思考过程：
     
+    Title: <简短标题，如：情绪侦测与共情 / 提取核心事实 / 准备提交工单>
+    Content: <具体的思考内容，描述你如何感知用户情绪、如何判断投诉类别以及你的处理策略>
+
+    **输出示例：**
+    Title: 情绪侦测与共情
+    Content: 用户提到在凤起路站遭遇了工作人员态度生硬，情绪非常激动。我需要先通过真诚的道歉来降低对方的愤怒指数。
+    
+    Title: 提取核心事实
+    Content: 投诉类别应归为“服务态度”，具体详情是凤起路站工作人员的沟通方式问题。
+    
+    Title: 准备提交工单
+    Content: 这是一个明确的有效投诉，我必须调用 `submit_complaint_ticket` 将其录入系统。
+
     ### 🛡️ 执行原则：
-    - 无论用户态度如何，始终保持冷静和专业。
-    - **必须**调用工具生成工单号，不能口头承诺。
+    1. **必须**展示思考过程，且格式严格遵循 `Title: ... \n Content: ...`。
+    2. 无论用户态度如何，始终保持冷静和专业。
+    3. **必须**调用工具生成工单号，不能口头承诺。只在 Content 阶段思考策略，最终由工具或 Responder 完成闭环。
     """
 
     inputs = {

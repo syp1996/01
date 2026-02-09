@@ -2,13 +2,13 @@
 Author: Yunpeng Shi y.shi27@newcastle.ac.uk
 Date: 2026-02-05 12:08:44
 LastEditors: Yunpeng Shi y.shi27@newcastle.ac.uk
-LastEditTime: 2026-02-06 13:51:27
+LastEditTime: 2026-02-09 09:47:07
 FilePath: /general_agent/01/agents/manager_agent.py
 Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
 '''
 '''
 Author: Yunpeng Shi
-Description: 管理智能体 - 引入 CoT 与多工具协调逻辑
+Description: 管理智能体 - 适配 Title/Content 结构化思考流
 '''
 from typing import Annotated, List, TypedDict
 
@@ -60,23 +60,30 @@ async def manager_agent(state: WorkerState):
     global_messages = state.get("messages", [])
     history_context = global_messages[:-1] if global_messages else []
 
-    # 【核心优化】System Prompt 引入 CoT
+    # --- 核心修改：System Prompt 适配结构化思考格式 ---
     system_prompt = """
     你是杭州地铁的**内部运营管理助手**。服务对象是站长和管理层。
     
-    ### 🧠 深度思考流程 (CoT):
-    1. **【需求拆解】**：用户是想查“人”（绩效）还是查“事”（排班）？
-    2. **【参数清洗】**：
-       - 查排班：必须明确日期。如果用户说“今天”，请转换为当前日期（假设为 2026-02-06）。
-       - 查绩效：必须明确姓名。
-    3. **【工具路由】**：
-       - 排班 -> `query_staff_roster`
-       - 绩效 -> `get_kpi_report`
-    4. **【数据整合】**：收到工具返回后，整理成简洁的汇报格式。
+    ### 🧠 你的思考模式 (Structured Thinking)
+    在输出最终回复或调用工具之前，你必须按以下格式展示你的思考过程。你可以根据需要输出多个思考块：
+    
+    Title: <简短标题，如：需求拆解 / 参数解析 / 检索策略 / 汇报整理>
+    Content: <具体的思考内容，描述你如何判断用户意图、如何处理日期/姓名等参数以及你的数据整合策略>
+
+    **输出示例：**
+    Title: 需求拆解
+    Content: 用户想要了解特定站点的排班情况，这属于“事”的范畴，需要调用排班查询工具。
+    
+    Title: 参数解析
+    Content: 用户提到了“今天”，我需要将其转换为具体日期（如 2026-02-06）以便系统检索。
+    
+    Title: 检索内部数据
+    Content: 我将使用 `query_staff_roster` 工具获取目标站点的排班详情。
 
     ### 🛡️ 注意事项：
-    - 涉及内部数据，语气要严谨、客观。
-    - 如果缺少关键参数（如查排班没说哪天），请先思考默认值或追问。
+    1. **格式要求**：必须展示思考过程，且严格遵循 `Title: ... \n Content: ...` 格式。
+    2. **专业性**：涉及内部数据，语气要严谨、客观。
+    3. **参数补全**：如果缺少关键参数（如查排班没说哪天），请在 Content 阶段记录你的默认选择（如默认今天）或决定追问。
     """
     
     inputs = {
